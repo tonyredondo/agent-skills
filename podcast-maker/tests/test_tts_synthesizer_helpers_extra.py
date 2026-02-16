@@ -237,6 +237,42 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         b = self.synth._manifest_checksum(manifest)
         self.assertNotEqual(a, b)
 
+    def test_manifest_checksum_changes_with_audio_metadata(self) -> None:
+        manifest = {
+            "checkpoint_version": 2,
+            "episode_id": "ep",
+            "status": "running",
+            "segments": [
+                {
+                    "segment_id": "0001",
+                    "index": 1,
+                    "file_name": "seg_0001.wav",
+                    "audio_format": "wav",
+                    "content_type": "audio/wav",
+                    "tts_provider": "alibaba",
+                    "tts_model": "qwen3-tts-instruct-flash",
+                    "status": "done",
+                    "attempts": 1,
+                }
+            ],
+        }
+        a = self.synth._manifest_checksum(manifest)
+        manifest["segments"][0]["audio_format"] = "mp3"
+        b = self.synth._manifest_checksum(manifest)
+        self.assertNotEqual(a, b)
+
+    def test_backfill_segment_audio_metadata_infers_format_by_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            seg_path = os.path.join(tmp, "seg_0001")
+            with open(seg_path, "wb") as f:
+                f.write(b"RIFF\x00\x00\x00\x00WAVE")
+            seg = {"segment_id": "0001", "index": 1, "file_name": "seg_0001", "status": "done"}
+            changed = self.synth._backfill_segment_audio_metadata(seg, segments_dir=tmp)
+            self.assertTrue(changed)
+            self.assertEqual(seg.get("audio_format"), "wav")
+            self.assertEqual(seg.get("content_type"), "audio/wav")
+            self.assertEqual(seg.get("file_name"), "seg_0001.wav")
+
     def test_build_output_segment_files_includes_pause_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = mock.Mock()

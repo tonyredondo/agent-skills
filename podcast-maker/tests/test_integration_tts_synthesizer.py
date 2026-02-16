@@ -20,6 +20,7 @@ from pipeline.errors import (  # noqa: E402
 )
 from pipeline.logging_utils import Logger  # noqa: E402
 from pipeline.tts_synthesizer import TTSSynthesizer  # noqa: E402
+from pipeline.tts_provider import TTSAudioResult  # noqa: E402
 
 
 class FakeTTSClient:
@@ -56,6 +57,40 @@ class FailingTTSClient(FakeTTSClient):
     ):
         self.requests_made += 1
         raise RuntimeError("TTS global timeout reached")
+
+
+class FakeMultiFormatProvider(FakeTTSClient):
+    provider_name = "alibaba"
+    model_name = "qwen3-tts-instruct-flash"
+    default_file_extension = "wav"
+
+    def synthesize_speech(  # noqa: ANN001
+        self,
+        *,
+        text,
+        instructions,
+        voice,
+        speed=None,
+        stage,
+        timeout_seconds_override=None,
+        cancel_check=None,
+    ):
+        self.requests_made += 1
+        if self.requests_made % 2 == 0:
+            return TTSAudioResult(
+                audio_bytes=(f"ID3-{voice}-{stage}").encode("utf-8"),
+                content_type="audio/mpeg",
+                file_extension="mp3",
+                provider="alibaba",
+                model="qwen3-tts-instruct-flash",
+            )
+        return TTSAudioResult(
+            audio_bytes=b"RIFF\x00\x00\x00\x00WAVEfmt ",
+            content_type="audio/wav",
+            file_extension="wav",
+            provider="alibaba",
+            model="qwen3-tts-instruct-flash",
+        )
 
 
 class TTSSynthesizerIntegrationTests(unittest.TestCase):
@@ -423,6 +458,37 @@ class TTSSynthesizerIntegrationTests(unittest.TestCase):
             ]
             self.assertEqual(len(chunk_start_calls), 1)
             self.assertEqual(chunk_start_calls[0].kwargs.get("chunk_id"), "parallel_all")
+
+    def test_synthesize_with_multiformat_provider_persists_audio_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = AudioConfig.from_env(profile_name="short")
+            cfg = dataclasses.replace(
+                cfg,
+                tts_provider="alibaba",
+                checkpoint_dir=os.path.join(tmp, "audio_ckpt"),
+                chunk_lines=1,
+                pause_between_segments_ms=0,
+                max_concurrent=1,
+            )
+            reliability = ReliabilityConfig.from_env()
+            logger = Logger.create(
+                LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+            )
+            client = FakeMultiFormatProvider()
+            synth = TTSSynthesizer(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+            lines = [
+                {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Linea uno de prueba."},
+                {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Linea dos de prueba."},
+            ]
+            result = synth.synthesize(lines=lines, episode_id="ep_multiformat", resume=False)
+            self.assertTrue(result.segment_files)
+            with open(result.manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            formats = {str(seg.get("audio_format", "")).strip() for seg in manifest.get("segments", [])}
+            self.assertIn("wav", formats)
+            self.assertIn("mp3", formats)
+            self.assertTrue(all(str(seg.get("content_type", "")).startswith("audio/") for seg in manifest["segments"]))
+            self.assertTrue(all(str(seg.get("tts_provider", "")) == "alibaba" for seg in manifest["segments"]))
 
 
 if __name__ == "__main__":

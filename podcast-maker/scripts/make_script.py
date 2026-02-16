@@ -712,11 +712,11 @@ def main(argv: list[str] | None = None) -> int:
                     max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
                 )
                 if completeness_v2_enabled:
-                    hardened_lines = repair_script_completeness(
+                    completeness_lines = repair_script_completeness(
                         hardened_lines,
                         max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
                     )
-                    completeness_report = evaluate_script_completeness(hardened_lines)
+                    completeness_report = evaluate_script_completeness(completeness_lines)
                     if not bool(completeness_report.get("pass", False)):
                         raise ScriptOperationError(
                             "Script completeness check failed before quality gate",
@@ -831,18 +831,20 @@ def main(argv: list[str] | None = None) -> int:
                 if not isinstance(final_payload, dict):
                     final_payload = validated_payload
                 final_lines = list(final_payload.get("lines", [])) if isinstance(final_payload, dict) else []
+                materialized_final_lines: list[dict[str, str]] = []
                 final_completeness_pass = True
                 if final_lines:
-                    final_lines = harden_script_structure(
+                    materialized_final_lines = harden_script_structure(
                         final_lines,
                         max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
                     )
+                    completeness_lines = materialized_final_lines
                     if completeness_v2_enabled:
-                        final_lines = repair_script_completeness(
-                            final_lines,
+                        completeness_lines = repair_script_completeness(
+                            materialized_final_lines,
                             max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
                         )
-                        final_completeness = evaluate_script_completeness(final_lines)
+                        final_completeness = evaluate_script_completeness(completeness_lines)
                         final_completeness_pass = bool(final_completeness.get("pass", False))
                         if not final_completeness_pass:
                             reasons = list(quality_report.get("reasons", []))
@@ -851,8 +853,9 @@ def main(argv: list[str] | None = None) -> int:
                                     reasons.append(str(item))
                             quality_report["reasons"] = reasons
                             quality_report["pass"] = False
-                applied_repair = bool(final_lines) and (
-                    bool(repair_result.get("repaired", False)) or final_lines != initial_lines_for_gate
+                applied_repair = bool(materialized_final_lines) and (
+                    bool(repair_result.get("repaired", False))
+                    or materialized_final_lines != initial_lines_for_gate
                 )
                 gate_passed = bool(quality_report.get("pass", False)) and final_completeness_pass
                 gate_enforce_failed = script_gate_action == "enforce" and not gate_passed
@@ -860,7 +863,7 @@ def main(argv: list[str] | None = None) -> int:
                 if applied_repair:
                     # Persist repaired script and synchronize checkpoint/summary
                     # so resume keeps using the corrected content.
-                    _atomic_write_json(result.output_path, {"lines": final_lines})
+                    _atomic_write_json(result.output_path, {"lines": materialized_final_lines})
                     logger.info(
                         "script_quality_repair_applied",
                         output_path=result.output_path,
@@ -870,13 +873,13 @@ def main(argv: list[str] | None = None) -> int:
                     _sync_script_artifacts_after_repair(
                         checkpoint_path=result.checkpoint_path,
                         run_summary_path=result.run_summary_path,
-                        repaired_lines=final_lines,
+                        repaired_lines=materialized_final_lines,
                         status=artifact_status,
                         failure_kind=ERROR_KIND_SCRIPT_QUALITY if gate_enforce_failed else None,
                         logger=logger,
                     )
-                    result.line_count = len(final_lines)
-                    result.word_count = count_words_from_lines(final_lines)
+                    result.line_count = len(materialized_final_lines)
+                    result.word_count = count_words_from_lines(materialized_final_lines)
                 elif gate_enforce_failed:
                     # Keep status consistent when quality gate fails after generation.
                     _sync_script_artifacts_after_repair(

@@ -36,8 +36,9 @@ from .errors import (
     summarize_failure_kinds,
 )
 from .logging_utils import Logger
-from .openai_client import OpenAIClient
 from .schema import content_hash
+from .tts_expressiveness import build_provider_instructions
+from .tts_provider import TTSAudioResult, TTSProvider, normalize_file_extension
 
 
 DEFAULT_HOST1_INSTR = (
@@ -288,26 +289,43 @@ def _infer_name_gender(name: str) -> str:
     return ""
 
 
-def _role_voice_defaults() -> Dict[str, str]:
-    """Resolve default voices per host role from environment."""
+def _provider_defaults(provider: str) -> Dict[str, str]:
+    """Resolve default voices per provider/role from environment."""
+    normalized = str(provider or "").strip().lower()
+    if normalized == "alibaba":
+        male = _env_str("TTS_ALIBABA_MALE_VOICE", "Ethan")
+        female = _env_str("TTS_ALIBABA_FEMALE_VOICE", "Cherry")
+        default_voice = _env_str("TTS_ALIBABA_DEFAULT_VOICE", female)
+        return {
+            "host1": male,
+            "host2": female,
+            "male": male,
+            "female": female,
+            "default": default_voice,
+        }
     host1_default = _env_str("TTS_HOST1_VOICE", "cedar")
     host2_default = _env_str("TTS_HOST2_VOICE", "marin")
-    return {"Host1": host1_default, "Host2": host2_default}
+    return {
+        "host1": host1_default,
+        "host2": host2_default,
+        "male": _env_str("TTS_MALE_VOICE", "cedar"),
+        "female": _env_str("TTS_FEMALE_VOICE", "marin"),
+        "default": _env_str("TTS_DEFAULT_VOICE", host1_default),
+    }
 
 
 def voice_for(
     role_or_speaker: str,
     *,
+    provider: str = "openai",
     speaker_name: str = "",
     role_speakers: Optional[Dict[str, str]] = None,
 ) -> str:
     """Resolve voice using role defaults and optional speaker-gender hints."""
     role_or_name = str(role_or_speaker or "").strip()
-    role_defaults = _role_voice_defaults()
-    fallback_voice = role_defaults.get(
-        role_or_name,
-        _env_str("TTS_DEFAULT_VOICE", role_defaults.get("Host1", "cedar")),
-    )
+    defaults = _provider_defaults(provider)
+    role_defaults = {"Host1": defaults["host1"], "Host2": defaults["host2"]}
+    fallback_voice = role_defaults.get(role_or_name, defaults["default"])
     mode = _env_str("TTS_VOICE_ASSIGNMENT_MODE", "auto").lower()
     if mode not in {"auto", "role", "speaker_gender"}:
         mode = "auto"
@@ -322,9 +340,9 @@ def voice_for(
 
     inferred_gender = _infer_name_gender(candidate_name)
     if inferred_gender == "female":
-        return _env_str("TTS_FEMALE_VOICE", "marin")
+        return defaults["female"]
     if inferred_gender == "male":
-        return _env_str("TTS_MALE_VOICE", "cedar")
+        return defaults["male"]
     return fallback_voice
 
 
@@ -381,7 +399,7 @@ class TTSSynthesizer:
     config: AudioConfig
     reliability: ReliabilityConfig
     logger: Logger
-    client: OpenAIClient
+    client: TTSProvider
 
     def _resolve_phase_for_line(self, *, line_index: int, total_lines: int) -> str:
         """Map line position to intro/body/closing speech phase."""
@@ -425,19 +443,13 @@ class TTSSynthesizer:
         )
 
     def _refine_instructions_for_phase(self, *, instructions: str, role: str, phase: str) -> str:
-        """Merge phase style defaults with line-level instruction overrides."""
-        normalized_phase = _normalize_phase(phase)
-        parsed_fields, extras = _parse_instruction_fields(instructions)
-        if not parsed_fields:
-            extras = []
-        merged = _default_instruction_fields(role)
-        merged.update(PHASE_STYLE_OVERRIDES.get(normalized_phase, PHASE_STYLE_OVERRIDES[PHASE_BODY]))
-        # Preserve explicit per-line guidance when it is already structured.
-        merged.update(parsed_fields)
-        rendered = _render_instruction_fields(merged, extras)
-        if rendered:
-            return rendered
-        return DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
+        """Build per-provider expressive instructions for a speech phase."""
+        return build_provider_instructions(
+            provider=str(getattr(self.client, "provider_name", self.config.tts_provider)),
+            role=role,
+            phase=_normalize_phase(phase),
+            raw_instructions=instructions,
+        )
 
     def _phase_speed_metrics(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Compute phase and speed statistics from manifest segments."""
@@ -483,6 +495,13 @@ class TTSSynthesizer:
         """Convert script lines into segment-level synthesis units."""
         segments: List[Dict[str, Any]] = []
         role_speakers: Dict[str, str] = {}
+        provider_name = str(getattr(self.client, "provider_name", self.config.tts_provider)).strip() or "openai"
+        model_name = str(getattr(self.client, "model_name", self.config.model)).strip() or self.config.model
+        default_ext = normalize_file_extension(
+            str(getattr(self.client, "default_file_extension", "mp3")),
+            fallback="mp3",
+        )
+        default_content_type = self._content_type_for_extension(default_ext)
         total_valid_lines = 0
         for line in lines:
             role_hint = str(line.get("role", "")).strip()
@@ -510,7 +529,12 @@ class TTSSynthesizer:
                 role=role,
                 phase=phase,
             )
-            voice = voice_for(role or speaker, speaker_name=speaker, role_speakers=role_speakers)
+            voice = voice_for(
+                role or speaker,
+                provider=provider_name,
+                speaker_name=speaker,
+                role_speakers=role_speakers,
+            )
             speed = self._speed_for_phase(phase)
             parts = split_text_for_tts(text, self.config.tts_max_chars_per_segment)
             for part in parts:
@@ -539,7 +563,11 @@ class TTSSynthesizer:
                         "attempts": 0,
                         "error": "",
                         "error_kind": "",
-                        "file_name": f"seg_{segment_id}.mp3",
+                        "file_name": f"seg_{segment_id}.{default_ext}",
+                        "audio_format": default_ext,
+                        "content_type": default_content_type,
+                        "tts_provider": provider_name,
+                        "tts_model": model_name,
                     }
                 )
         if not segments:
@@ -565,6 +593,164 @@ class TTSSynthesizer:
                 h.update(chunk)
         return h.hexdigest()
 
+    def _content_type_for_extension(self, extension: str) -> str:
+        normalized = normalize_file_extension(extension, fallback="mp3")
+        if normalized == "wav":
+            return "audio/wav"
+        if normalized == "ogg":
+            return "audio/ogg"
+        if normalized == "flac":
+            return "audio/flac"
+        if normalized == "webm":
+            return "audio/webm"
+        return "audio/mpeg"
+
+    def _infer_extension_from_signature(self, path: str) -> str:
+        try:
+            with open(path, "rb") as f:
+                header = f.read(16)
+        except OSError:
+            return ""
+        if len(header) >= 4 and header[0:4] == b"RIFF":
+            return "wav"
+        if len(header) >= 4 and header[0:4] == b"OggS":
+            return "ogg"
+        if len(header) >= 3 and header[0:3] == b"ID3":
+            return "mp3"
+        if len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0:
+            return "mp3"
+        return ""
+
+    def _candidate_segment_file_name(self, seg: Dict[str, Any]) -> str:
+        seg_id = str(seg.get("segment_id", "")).strip()
+        if seg_id:
+            return f"seg_{seg_id}"
+        return f"seg_{int(seg.get('index', 0) or 0):04d}"
+
+    def _infer_extension_for_segment(self, seg: Dict[str, Any], *, segments_dir: str) -> str:
+        file_name = str(seg.get("file_name", "")).strip()
+        if "." in file_name:
+            ext = normalize_file_extension(file_name.rsplit(".", 1)[-1], fallback="")
+            if ext in {"mp3", "wav", "ogg", "flac", "webm"}:
+                return ext
+        audio_format = str(seg.get("audio_format", "")).strip()
+        if audio_format:
+            ext = normalize_file_extension(audio_format, fallback="")
+            if ext in {"mp3", "wav", "ogg", "flac", "webm"}:
+                return ext
+        content_type = str(seg.get("content_type", "")).split(";", 1)[0].strip().lower()
+        if content_type:
+            ext = normalize_file_extension(content_type=content_type, fallback="")
+            if ext in {"mp3", "wav", "ogg", "flac", "webm"}:
+                return ext
+        output_path = str(seg.get("output_path", "")).strip()
+        if output_path and os.path.exists(output_path):
+            inferred = self._infer_extension_from_signature(output_path)
+            if inferred:
+                return inferred
+        base_name = self._candidate_segment_file_name(seg)
+        try:
+            plain_path = os.path.join(segments_dir, base_name)
+            if os.path.exists(plain_path) and os.path.getsize(plain_path) > 0:
+                signature_ext = self._infer_extension_from_signature(plain_path)
+                if signature_ext:
+                    return signature_ext
+            for candidate in os.listdir(segments_dir):
+                if not (candidate == base_name or candidate.startswith(f"{base_name}.")):
+                    continue
+                path = os.path.join(segments_dir, candidate)
+                if not (os.path.exists(path) and os.path.getsize(path) > 0):
+                    continue
+                signature_ext = self._infer_extension_from_signature(path)
+                if signature_ext:
+                    return signature_ext
+                if "." in candidate:
+                    return normalize_file_extension(candidate.rsplit(".", 1)[-1], fallback="")
+        except OSError:
+            pass
+        return ""
+
+    def _backfill_segment_audio_metadata(self, seg: Dict[str, Any], *, segments_dir: str) -> bool:
+        changed = False
+        if not isinstance(seg, dict):
+            return changed
+        inferred_ext = self._infer_extension_for_segment(seg, segments_dir=segments_dir)
+        if not inferred_ext:
+            # Legacy-safe fallback only when there are mp3-compatible hints.
+            file_name = str(seg.get("file_name", "")).strip().lower()
+            if file_name.endswith(".mp3"):
+                inferred_ext = "mp3"
+            else:
+                inferred_ext = normalize_file_extension(
+                    str(getattr(self.client, "default_file_extension", "mp3")),
+                    fallback="mp3",
+                )
+        current_file_name = str(seg.get("file_name", "")).strip()
+        if not current_file_name:
+            seg["file_name"] = f"{self._candidate_segment_file_name(seg)}.{inferred_ext}"
+            changed = True
+        elif "." not in current_file_name:
+            migrated_name = f"{current_file_name}.{inferred_ext}"
+            old_path = os.path.join(segments_dir, current_file_name)
+            new_path = os.path.join(segments_dir, migrated_name)
+            if old_path != new_path and os.path.exists(old_path) and not os.path.exists(new_path):
+                try:
+                    os.replace(old_path, new_path)
+                except OSError:
+                    pass
+            seg["file_name"] = migrated_name
+            changed = True
+        current_format = str(seg.get("audio_format", "")).strip().lower()
+        normalized_format = normalize_file_extension(current_format or inferred_ext, fallback=inferred_ext)
+        if current_format != normalized_format:
+            seg["audio_format"] = normalized_format
+            changed = True
+        content_type = str(seg.get("content_type", "")).split(";", 1)[0].strip().lower()
+        normalized_content_type = content_type or self._content_type_for_extension(normalized_format)
+        if content_type != normalized_content_type:
+            seg["content_type"] = normalized_content_type
+            changed = True
+        if not str(seg.get("tts_provider", "")).strip():
+            seg["tts_provider"] = str(getattr(self.client, "provider_name", self.config.tts_provider)).strip() or "openai"
+            changed = True
+        if not str(seg.get("tts_model", "")).strip():
+            seg["tts_model"] = str(getattr(self.client, "model_name", self.config.model)).strip() or self.config.model
+            changed = True
+        return changed
+
+    def _coerce_tts_audio_result(self, value: Any) -> TTSAudioResult:
+        if isinstance(value, TTSAudioResult):
+            ext = normalize_file_extension(
+                value.file_extension,
+                content_type=value.content_type,
+                fallback=str(getattr(self.client, "default_file_extension", "mp3")),
+            )
+            content_type = str(value.content_type or "").split(";", 1)[0].strip()
+            if not content_type:
+                content_type = self._content_type_for_extension(ext)
+            provider = str(value.provider or getattr(self.client, "provider_name", "openai")).strip() or "openai"
+            model = str(value.model or getattr(self.client, "model_name", self.config.model)).strip() or self.config.model
+            return TTSAudioResult(
+                audio_bytes=value.audio_bytes,
+                content_type=content_type,
+                file_extension=ext,
+                provider=provider,
+                model=model,
+            )
+        if isinstance(value, (bytes, bytearray)):
+            ext = normalize_file_extension(
+                str(getattr(self.client, "default_file_extension", "mp3")),
+                fallback="mp3",
+            )
+            return TTSAudioResult(
+                audio_bytes=bytes(value),
+                content_type=self._content_type_for_extension(ext),
+                file_extension=ext,
+                provider=str(getattr(self.client, "provider_name", self.config.tts_provider)).strip() or "openai",
+                model=str(getattr(self.client, "model_name", self.config.model)).strip() or self.config.model,
+            )
+        raise RuntimeError("TTS provider returned unsupported audio result type")
+
     def _manifest_checksum(self, manifest: Dict[str, Any]) -> str:
         """Build a deterministic checksum for manifest state tracking."""
         segments_view = []
@@ -580,6 +766,10 @@ class TTSSynthesizer:
                     "error_kind": seg.get("error_kind", ""),
                     "phase": _normalize_phase(str(seg.get("phase", ""))),
                     "speed": _clamp_tts_speed(seg.get("speed"), fallback=self.config.tts_speed_default),
+                    "audio_format": str(seg.get("audio_format", "")).strip().lower(),
+                    "content_type": str(seg.get("content_type", "")).split(";", 1)[0].strip().lower(),
+                    "tts_provider": str(seg.get("tts_provider", "")).strip().lower(),
+                    "tts_model": str(seg.get("tts_model", "")).strip(),
                     "checksum_sha256": seg.get("checksum_sha256", ""),
                 }
             )
@@ -601,7 +791,7 @@ class TTSSynthesizer:
             counts[st] += 1
         return counts
 
-    def _ensure_chunk_metadata(self, manifest: Dict[str, Any]) -> bool:
+    def _ensure_chunk_metadata(self, manifest: Dict[str, Any], *, segments_dir: Optional[str] = None) -> bool:
         """Backfill missing segment metadata in legacy manifests."""
         changed = False
         segments = [seg for seg in manifest.get("segments", []) if isinstance(seg, dict)]
@@ -638,6 +828,8 @@ class TTSSynthesizer:
             current_speed = _clamp_tts_speed(seg.get("speed"), fallback=expected_speed)
             if not isinstance(seg.get("speed"), (int, float)) or abs(float(current_speed) - float(seg.get("speed", 0.0))) > 1e-9:
                 seg["speed"] = current_speed
+                changed = True
+            if segments_dir and self._backfill_segment_audio_metadata(seg, segments_dir=segments_dir):
                 changed = True
         return changed
 
@@ -745,6 +937,7 @@ class TTSSynthesizer:
         try:
             def persist_manifest() -> None:
                 self._apply_phase_metrics_to_manifest(manifest)
+                manifest["manifest_checksum_version"] = 2
                 manifest["manifest_checksum_sha256"] = self._manifest_checksum(manifest)
                 store.save(manifest)
 
@@ -807,10 +1000,14 @@ class TTSSynthesizer:
             else:
                 # Mark missing files as pending so resume can heal partial states.
                 for seg in manifest.get("segments", []):
+                    self._backfill_segment_audio_metadata(seg, segments_dir=store.segments_dir)
                     file_name = str(seg.get("file_name", "")).strip()
                     if not file_name:
-                        seg_id = str(seg.get("segment_id", "")).strip()
-                        file_name = f"seg_{seg_id}.mp3" if seg_id else f"seg_{int(seg.get('index', 0) or 0):04d}.mp3"
+                        inferred_ext = self._infer_extension_for_segment(seg, segments_dir=store.segments_dir) or normalize_file_extension(
+                            str(getattr(self.client, "default_file_extension", "mp3")),
+                            fallback="mp3",
+                        )
+                        file_name = f"{self._candidate_segment_file_name(seg)}.{inferred_ext}"
                         seg["file_name"] = file_name
                     seg_path = os.path.join(store.segments_dir, file_name)
                     status = str(seg.get("status", "")).strip().lower()
@@ -827,6 +1024,8 @@ class TTSSynthesizer:
                             has_audio_file = False
                         if has_audio_file and expected_checksum and expected_checksum != actual_checksum:
                             checksum_mismatch = True
+                        if has_audio_file:
+                            self._backfill_segment_audio_metadata(seg, segments_dir=store.segments_dir)
                     if status == "done":
                         # "done" must still be validated against actual files to
                         # avoid trusting stale manifest flags after crashes.
@@ -901,7 +1100,7 @@ class TTSSynthesizer:
                                 seg["error"] = "output_missing_on_resume"
                             seg["error_kind"] = ERROR_KIND_RESUME_BLOCKED
                             seg["updated_at"] = int(time.time())
-                if self._ensure_chunk_metadata(manifest):
+                if self._ensure_chunk_metadata(manifest, segments_dir=store.segments_dir):
                     self.logger.info("audio_manifest_chunk_metadata_repaired")
                 manifest["updated_at"] = int(time.time())
                 persist_manifest()
@@ -933,7 +1132,7 @@ class TTSSynthesizer:
                     "failed": c.get("failed", 0),
                 }
 
-            def worker(seg_index: int) -> Tuple[int, str, int]:
+            def worker(seg_index: int) -> Tuple[int, str, int, TTSAudioResult]:
                 with lock:
                     seg = manifest["segments"][seg_index]
                     seg["status"] = "running"
@@ -948,11 +1147,6 @@ class TTSSynthesizer:
                     seg["phase"] = phase
                     seg["speed"] = speed
                     instructions = seg["instructions"]
-                    file_name = str(seg.get("file_name", "")).strip()
-                    if not file_name:
-                        file_name = f"seg_{str(seg_id).strip() or int(seg.get('index', 0) or 0):0>4}.mp3"
-                        seg["file_name"] = file_name
-                    out_file = os.path.join(store.segments_dir, file_name)
                 stage = f"tts_segment_{seg_id}"
                 timeout_override = None
                 if self.config.global_timeout_seconds > 0:
@@ -984,7 +1178,7 @@ class TTSSynthesizer:
                     synth_kwargs["cancel_check"] = cancel_check
                 while True:
                     try:
-                        audio = self.client.synthesize_speech(**synth_kwargs)
+                        raw_audio = self.client.synthesize_speech(**synth_kwargs)
                         break
                     except TypeError as exc:
                         # Compatibility path for mocked/custom clients that do not
@@ -997,8 +1191,26 @@ class TTSSynthesizer:
                                 removed = True
                         if not removed:
                             raise
-                self._write_audio_atomic(out_file, audio)
-                return seg_index, out_file, len(audio)
+                audio_result = self._coerce_tts_audio_result(raw_audio)
+                extension = normalize_file_extension(
+                    audio_result.file_extension,
+                    content_type=audio_result.content_type,
+                    fallback=str(getattr(self.client, "default_file_extension", "mp3")),
+                )
+                content_type = str(audio_result.content_type or "").split(";", 1)[0].strip().lower()
+                if not content_type:
+                    content_type = self._content_type_for_extension(extension)
+                with lock:
+                    seg = manifest["segments"][seg_index]
+                    file_name = f"{self._candidate_segment_file_name(seg)}.{extension}"
+                    seg["file_name"] = file_name
+                    seg["audio_format"] = extension
+                    seg["content_type"] = content_type
+                    seg["tts_provider"] = str(audio_result.provider or "").strip().lower() or "openai"
+                    seg["tts_model"] = str(audio_result.model or "").strip()
+                    out_file = os.path.join(store.segments_dir, file_name)
+                self._write_audio_atomic(out_file, audio_result.audio_bytes)
+                return seg_index, out_file, len(audio_result.audio_bytes), audio_result
 
             with self.logger.heartbeat("tts_synthesis", status_fn=heartbeat_status):
                 for chunk_id, group_indexes in pending_groups:
@@ -1076,7 +1288,7 @@ class TTSSynthesizer:
                                 with lock:
                                     seg = manifest["segments"][seg_idx]
                                 try:
-                                    finished_idx, out_path, byte_count = fut.result()
+                                    finished_idx, out_path, byte_count, audio_result = fut.result()
                                     with lock:
                                         seg = manifest["segments"][finished_idx]
                                         seg["status"] = "done"
@@ -1084,6 +1296,23 @@ class TTSSynthesizer:
                                         seg["error_kind"] = ""
                                         seg["bytes"] = byte_count
                                         seg["output_path"] = out_path
+                                        seg["audio_format"] = normalize_file_extension(
+                                            audio_result.file_extension,
+                                            content_type=audio_result.content_type,
+                                            fallback=seg.get("audio_format", ""),
+                                        )
+                                        seg["content_type"] = (
+                                            str(audio_result.content_type or "").split(";", 1)[0].strip().lower()
+                                            or self._content_type_for_extension(str(seg.get("audio_format", "")))
+                                        )
+                                        seg["tts_provider"] = (
+                                            str(audio_result.provider or seg.get("tts_provider", "")).strip().lower()
+                                            or str(getattr(self.client, "provider_name", "openai"))
+                                        )
+                                        seg["tts_model"] = (
+                                            str(audio_result.model or seg.get("tts_model", "")).strip()
+                                            or str(getattr(self.client, "model_name", self.config.model))
+                                        )
                                         seg["checksum_sha256"] = self._file_sha256(out_path)
                                         seg["updated_at"] = int(time.time())
                                         manifest["updated_at"] = int(time.time())
@@ -1104,6 +1333,9 @@ class TTSSynthesizer:
                                             seg.get("speed"),
                                             fallback=self.config.tts_speed_default,
                                         ),
+                                        provider=seg.get("tts_provider", ""),
+                                        model=seg.get("tts_model", ""),
+                                        audio_format=seg.get("audio_format", ""),
                                         bytes=byte_count,
                                     )
                                 except Exception as exc:  # noqa: BLE001
@@ -1166,6 +1398,34 @@ class TTSSynthesizer:
             manifest["updated_at"] = int(time.time())
             persist_manifest()
             phase_metrics = self._phase_speed_metrics(manifest["segments"])
+            provider_values = sorted(
+                {
+                    str(seg.get("tts_provider", "")).strip().lower()
+                    for seg in manifest["segments"]
+                    if str(seg.get("tts_provider", "")).strip()
+                }
+            )
+            model_values = sorted(
+                {
+                    str(seg.get("tts_model", "")).strip()
+                    for seg in manifest["segments"]
+                    if str(seg.get("tts_model", "")).strip()
+                }
+            )
+            audio_formats = sorted(
+                {
+                    str(seg.get("audio_format", "")).strip().lower()
+                    for seg in manifest["segments"]
+                    if str(seg.get("audio_format", "")).strip()
+                }
+            )
+            voices = sorted(
+                {
+                    str(seg.get("voice", "")).strip()
+                    for seg in manifest["segments"]
+                    if str(seg.get("voice", "")).strip()
+                }
+            )
 
             summary = {
                 "component": "tts_synthesizer",
@@ -1174,8 +1434,14 @@ class TTSSynthesizer:
                 "segments_total": len(manifest["segments"]),
                 "segments_done": len(done_segments),
                 "segments_failed": len(failed_segments),
-                "requests_made": self.client.requests_made,
-                "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
+                "tts_provider": str(getattr(self.client, "provider_name", self.config.tts_provider)).strip().lower(),
+                "tts_model": str(getattr(self.client, "model_name", self.config.model)).strip(),
+                "tts_providers": provider_values,
+                "tts_models": model_values,
+                "audio_formats": audio_formats,
+                "voices": voices,
+                "requests_made": int(self.client.requests_made),
+                "estimated_cost_usd": round(float(self.client.estimated_cost_usd), 4),
                 "elapsed_seconds": round(time.time() - started, 2),
                 "tts_phase_counts": phase_metrics["phase_counts"],
                 "tts_speed_stats": phase_metrics["speed_stats"],
@@ -1276,8 +1542,10 @@ class TTSSynthesizer:
                     "segments_total": segments_total,
                     "segments_done": segments_done,
                     "segments_failed": segments_failed,
-                    "requests_made": self.client.requests_made,
-                    "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
+                    "tts_provider": str(getattr(self.client, "provider_name", self.config.tts_provider)).strip().lower(),
+                    "tts_model": str(getattr(self.client, "model_name", self.config.model)).strip(),
+                    "requests_made": int(self.client.requests_made),
+                    "estimated_cost_usd": round(float(self.client.estimated_cost_usd), 4),
                     "elapsed_seconds": round(time.time() - started, 2),
                     "failure_kind": current_failure_kind,
                     "failure_kinds": failed_kinds,
@@ -1306,8 +1574,10 @@ class TTSSynthesizer:
                     "component": "tts_synthesizer",
                     "episode_id": episode_id,
                     "status": "interrupted",
-                    "requests_made": self.client.requests_made,
-                    "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
+                    "tts_provider": str(getattr(self.client, "provider_name", self.config.tts_provider)).strip().lower(),
+                    "tts_model": str(getattr(self.client, "model_name", self.config.model)).strip(),
+                    "requests_made": int(self.client.requests_made),
+                    "estimated_cost_usd": round(float(self.client.estimated_cost_usd), 4),
                     "elapsed_seconds": round(time.time() - started, 2),
                 }
                 with open(store.summary_path, "w", encoding="utf-8") as f:

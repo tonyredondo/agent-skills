@@ -941,7 +941,12 @@ def normalize_block_numbering(lines: List[Dict[str, str]]) -> List[Dict[str, str
     return out
 
 
-def sanitize_abrupt_tail(lines: List[Dict[str, str]], *, tail_window: int = 8) -> List[Dict[str, str]]:
+def sanitize_abrupt_tail(
+    lines: List[Dict[str, str]],
+    *,
+    tail_window: int = 8,
+    ensure_terminal_punctuation: bool = False,
+) -> List[Dict[str, str]]:
     """Sanitize abrupt punctuation/connectors near script tail."""
     out = [dict(line) for line in lines]
     start = max(0, len(out) - max(1, int(tail_window)))
@@ -951,6 +956,15 @@ def sanitize_abrupt_tail(lines: List[Dict[str, str]], *, tail_window: int = 8) -
             continue
         updated = _sanitize_tail_text(text)
         updated = re.sub(r"\s+\.", ".", updated).strip()
+        # Repair an incomplete last sentence that lacks terminal punctuation.
+        if (
+            ensure_terminal_punctuation
+            and idx == len(out) - 1
+            and updated
+            and not _is_complete_sentence(updated)
+        ):
+            updated = f"{updated.rstrip('.')}."
+            updated = re.sub(r"\s+\.", ".", updated).strip()
         if updated != text:
             out[idx]["text"] = updated
     return out
@@ -1100,7 +1114,11 @@ def repair_script_completeness(
     normalized = sanitize_declared_tease_intent(normalized)
     normalized = diversify_repetitive_openers(normalized)
     normalized = smooth_abrupt_transitions(normalized)
-    return sanitize_abrupt_tail(normalized, tail_window=max(1, len(normalized)))
+    return sanitize_abrupt_tail(
+        normalized,
+        tail_window=max(1, len(normalized)),
+        ensure_terminal_punctuation=True,
+    )
 
 
 def harden_script_structure(

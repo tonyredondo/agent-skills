@@ -15,6 +15,26 @@ from typing import Any, Dict, List, Optional, Tuple
 from .config import ReliabilityConfig
 
 
+def _content_type_for_extension(extension: str) -> str:
+    normalized = str(extension or "").strip().lower().lstrip(".")
+    if normalized == "wav":
+        return "audio/wav"
+    if normalized == "ogg":
+        return "audio/ogg"
+    if normalized == "flac":
+        return "audio/flac"
+    if normalized == "webm":
+        return "audio/webm"
+    return "audio/mpeg"
+
+
+def _extension_from_file_name(file_name: str) -> str:
+    value = str(file_name or "").strip()
+    if "." not in value:
+        return ""
+    return str(value.rsplit(".", 1)[-1]).strip().lower()
+
+
 def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
     """Write JSON atomically to avoid partial manifest files."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -278,6 +298,21 @@ class AudioCheckpointStore:
             manifest["migrated_from_version"] = existing_version
             manifest["checkpoint_version"] = current_version
             migrated = True
+        segments = manifest.get("segments", [])
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                ext = str(seg.get("audio_format", "")).strip().lower()
+                if not ext:
+                    ext = _extension_from_file_name(str(seg.get("file_name", "")))
+                    if ext:
+                        seg["audio_format"] = ext
+                        migrated = True
+                content_type = str(seg.get("content_type", "")).split(";", 1)[0].strip().lower()
+                if not content_type and ext:
+                    seg["content_type"] = _content_type_for_extension(ext)
+                    migrated = True
         if not self.reliability.resume_require_matching_fingerprint or resume_force:
             return migrated
         if manifest.get("config_fingerprint") != config_fingerprint:

@@ -379,7 +379,16 @@ class ScriptConfig:
 class AudioConfig:
     """Audio synthesis/mixing runtime configuration."""
 
+    tts_provider: str
     model: str
+    tts_openai_model: str
+    tts_alibaba_model: str
+    tts_alibaba_base_url: str
+    tts_alibaba_language_type: str
+    tts_alibaba_optimize_instructions: bool
+    tts_alibaba_female_voice: str
+    tts_alibaba_male_voice: str
+    tts_alibaba_default_voice: str
     timeout_seconds: int
     retries: int
     max_concurrent: int
@@ -408,6 +417,20 @@ class AudioConfig:
     def from_env(*, profile_name: Optional[str] = None) -> "AudioConfig":
         """Build audio config from env and optional profile override."""
         profile = resolve_profile(_coalesce(profile_name, _env_str("PODCAST_DURATION_PROFILE", "standard")))
+        provider = _env_str("TTS_PROVIDER", "openai").strip().lower()
+        if provider not in {"openai", "alibaba"}:
+            provider = "openai"
+        legacy_model_env = os.environ.get("TTS_MODEL")
+        legacy_model = _env_str("TTS_MODEL", "gpt-4o-mini-tts")
+        tts_openai_model = _env_str("TTS_OPENAI_MODEL", legacy_model)
+        if os.environ.get("TTS_ALIBABA_MODEL", "").strip():
+            tts_alibaba_model = _env_str("TTS_ALIBABA_MODEL", "qwen3-tts-instruct-flash")
+        elif legacy_model_env is not None and str(legacy_model_env).strip():
+            tts_alibaba_model = legacy_model
+        else:
+            tts_alibaba_model = "qwen3-tts-instruct-flash"
+        # Keep this alias stable during migration for call sites that still read audio_cfg.model.
+        resolved_model = tts_alibaba_model if provider == "alibaba" else tts_openai_model
         tts_speed_default = _clamp_float(_env_float("TTS_SPEED_DEFAULT", 1.0), 0.25, 4.0)
 
         def _read_tts_speed(name: str, missing_default: float) -> float:
@@ -430,7 +453,19 @@ class AudioConfig:
         tts_phase_intro_ratio = _clamp_float(_env_float("TTS_PHASE_INTRO_RATIO", 0.15), 0.0, 0.45)
         tts_phase_closing_ratio = _clamp_float(_env_float("TTS_PHASE_CLOSING_RATIO", 0.15), 0.0, 0.45)
         return AudioConfig(
-            model=_env_str("TTS_MODEL", "gpt-4o-mini-tts"),
+            tts_provider=provider,
+            model=resolved_model,
+            tts_openai_model=tts_openai_model,
+            tts_alibaba_model=tts_alibaba_model,
+            tts_alibaba_base_url=_env_str(
+                "TTS_ALIBABA_BASE_URL",
+                "https://dashscope-intl.aliyuncs.com/api/v1",
+            ).rstrip("/"),
+            tts_alibaba_language_type=_env_str("TTS_ALIBABA_LANGUAGE_TYPE", "Spanish"),
+            tts_alibaba_optimize_instructions=_env_bool("TTS_ALIBABA_OPTIMIZE_INSTRUCTIONS", True),
+            tts_alibaba_female_voice=_env_str("TTS_ALIBABA_FEMALE_VOICE", "Cherry"),
+            tts_alibaba_male_voice=_env_str("TTS_ALIBABA_MALE_VOICE", "Ethan"),
+            tts_alibaba_default_voice=_env_str("TTS_ALIBABA_DEFAULT_VOICE", "Cherry"),
             timeout_seconds=max(5, _env_int("TTS_TIMEOUT_SECONDS", _env_int("TTS_TIMEOUT", 60))),
             retries=max(1, _env_int("TTS_RETRIES", 3)),
             max_concurrent=max(1, _env_int("TTS_MAX_CONCURRENT", profile.tts_max_concurrent)),

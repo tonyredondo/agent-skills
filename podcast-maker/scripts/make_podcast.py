@@ -59,6 +59,7 @@ from pipeline.script_quality_gate import (
 )
 from pipeline.slo_gates import append_slo_event, evaluate_slo_windows
 from pipeline.tts_synthesizer import TTSSynthesizer
+from pipeline.tts_provider_factory import create_tts_provider
 
 
 def _basename_arg(value: str) -> str:
@@ -203,6 +204,14 @@ def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
             pass
         raise
     return output_path
+
+
+def _segment_files_are_mp3(segment_files: list[str]) -> bool:
+    for path in segment_files:
+        if str(path or "").strip().lower().endswith(".mp3"):
+            continue
+        return False
+    return True
 
 
 def _write_podcast_run_summary(path: str, payload: dict[str, object]) -> None:
@@ -371,7 +380,8 @@ def main(argv: list[str] | None = None) -> int:
     stuck_abort = False
     estimated_cost_usd = 0.0
     failure_kind = None
-    client = None
+    quality_client = None
+    tts_provider = None
     quality_report_path = ""
     quality_report = None
     quality_eval_seconds = 0.0
@@ -490,17 +500,39 @@ def main(argv: list[str] | None = None) -> int:
             kept_files=report.kept_files,
         )
 
-        client = OpenAIClient.from_configs(
+        openai_tts_model = str(audio_cfg.tts_openai_model or audio_cfg.model).strip() or "gpt-4o-mini-tts"
+        quality_client = OpenAIClient.from_configs(
             logger=logger,
             reliability=reliability,
             script_model=script_cfg.model,
-            tts_model=audio_cfg.model,
+            tts_model=openai_tts_model,
             script_timeout_seconds=script_cfg.timeout_seconds,
             script_retries=script_cfg.retries,
             tts_timeout_seconds=audio_cfg.timeout_seconds,
             tts_retries=audio_cfg.retries,
             tts_backoff_base_ms=audio_cfg.retry_backoff_base_ms,
             tts_backoff_max_ms=audio_cfg.retry_backoff_max_ms,
+        )
+        openai_tts_client = None
+        if str(audio_cfg.tts_provider).strip().lower() == "openai":
+            # Keep TTS metrics isolated from quality-gate traffic.
+            openai_tts_client = OpenAIClient.from_configs(
+                logger=logger,
+                reliability=reliability,
+                script_model=script_cfg.model,
+                tts_model=openai_tts_model,
+                script_timeout_seconds=script_cfg.timeout_seconds,
+                script_retries=script_cfg.retries,
+                tts_timeout_seconds=audio_cfg.timeout_seconds,
+                tts_retries=audio_cfg.retries,
+                tts_backoff_base_ms=audio_cfg.retry_backoff_base_ms,
+                tts_backoff_max_ms=audio_cfg.retry_backoff_max_ms,
+            )
+        tts_provider = create_tts_provider(
+            audio_cfg=audio_cfg,
+            reliability=reliability,
+            logger=logger,
+            openai_client=openai_tts_client,
         )
         quality_gate_executed = bool(quality_cfg.enabled)
         script_gate_action_effective = str(quality_cfg.action)
@@ -514,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
                 script_cfg=script_cfg,
                 quality_cfg=quality_cfg,
                 script_path=args.script_path,
-                client=client,
+                client=quality_client,
                 logger=logger,
             )
             quality_eval_seconds = time.time() - quality_eval_started
@@ -572,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
             config=audio_cfg,
             reliability=reliability,
             logger=logger,
-            client=client,
+            client=tts_provider,
         )
         max_audio_attempts = int(audio_orchestrated_retry_max_attempts)
         if not audio_orchestrated_retry_enabled:
@@ -616,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     # Degraded path when ffmpeg is unavailable and raw-only mode
                     # is explicitly allowed.
+                    if not _segment_files_are_mp3(tts_result.segment_files):
+                        raise RuntimeError(
+                            "ffmpeg is required when raw-only fallback receives non-MP3 segments"
+                        )
                     raw_only = os.path.join(args.outdir, f"{args.basename}_raw_only.mp3")
                     final_path = _write_raw_only_mp3(tts_result.segment_files, raw_only)
                     raw_path = final_path
@@ -691,8 +727,10 @@ def main(argv: list[str] | None = None) -> int:
             "script_started_at": script_started_at_from_manifest,
             "script_completed_at": script_completed_at_from_manifest,
             "segment_count": len(tts_result.segment_files),
-            "requests_made": client.requests_made,
-            "estimated_cost_usd": round(client.estimated_cost_usd, 4),
+            "tts_provider": str(getattr(tts_provider, "provider_name", audio_cfg.tts_provider)).strip().lower(),
+            "tts_model": str(getattr(tts_provider, "model_name", audio_cfg.model)).strip(),
+            "requests_made": int(getattr(tts_provider, "requests_made", 0)),
+            "estimated_cost_usd": round(float(getattr(tts_provider, "estimated_cost_usd", 0.0)), 4),
             "elapsed_seconds": round(time.time() - started, 2),
             "manifest_path": tts_result.manifest_path,
             "tts_summary_path": tts_result.summary_path,
@@ -724,14 +762,14 @@ def main(argv: list[str] | None = None) -> int:
         status = "completed"
         output_path = final_path
         exit_code = 0
-        tts_requests = float(max(1, int(getattr(client, "tts_requests_made", client.requests_made))))
+        tts_requests = float(max(1, int(getattr(tts_provider, "requests_made", 0))))
         retry_rate = round(
-            float(getattr(client, "tts_retries_total", 0)) / tts_requests,
+            float(getattr(tts_provider, "retries_total", 0)) / tts_requests,
             4,
         )
         stuck_abort = False
         failure_kind = None
-        estimated_cost_usd = client.estimated_cost_usd
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
     except (InterruptedError, KeyboardInterrupt) as exc:
         logger.warn("podcast_interrupted", error=str(exc))
         status = "interrupted"
@@ -740,7 +778,7 @@ def main(argv: list[str] | None = None) -> int:
         # use exit code 130 to decide whether to resume automatically.
         failure_kind = ERROR_KIND_INTERRUPTED
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
     except ScriptOperationError as exc:
         logger.error("podcast_failed_operation", error=str(exc), error_kind=exc.error_kind)
         status = "failed"
@@ -750,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         stuck_abort = False
         failure_kind = exc.error_kind
         audio_stage = "failed_before_tts"
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
     except ScriptQualityGateError as exc:
         logger.error(
             "podcast_failed_script_quality_gate",
@@ -762,11 +800,11 @@ def main(argv: list[str] | None = None) -> int:
         stuck_abort = False
         failure_kind = ERROR_KIND_SCRIPT_QUALITY
         audio_stage = "failed_before_tts"
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
-        if client is not None:
-            tts_requests = float(max(1, int(getattr(client, "tts_requests_made", client.requests_made))))
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
+        if tts_provider is not None:
+            tts_requests = float(max(1, int(getattr(tts_provider, "requests_made", 0))))
             retry_rate = round(
-                float(getattr(client, "tts_retries_total", 0)) / tts_requests,
+                float(getattr(tts_provider, "retries_total", 0)) / tts_requests,
                 4,
             )
     except TTSBatchError as exc:
@@ -784,11 +822,11 @@ def main(argv: list[str] | None = None) -> int:
         failure_kind = exc.primary_kind
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
         manifest_path = str(exc.manifest_path or "").strip()
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
-        if client is not None:
-            tts_requests = float(max(1, int(getattr(client, "tts_requests_made", client.requests_made))))
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
+        if tts_provider is not None:
+            tts_requests = float(max(1, int(getattr(tts_provider, "requests_made", 0))))
             retry_rate = round(
-                float(getattr(client, "tts_retries_total", 0)) / tts_requests,
+                float(getattr(tts_provider, "retries_total", 0)) / tts_requests,
                 4,
             )
     except TTSOperationError as exc:
@@ -798,11 +836,11 @@ def main(argv: list[str] | None = None) -> int:
         stuck_abort = is_stuck_error_kind(exc.error_kind)
         failure_kind = exc.error_kind
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
-        if client is not None:
-            tts_requests = float(max(1, int(getattr(client, "tts_requests_made", client.requests_made))))
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
+        if tts_provider is not None:
+            tts_requests = float(max(1, int(getattr(tts_provider, "requests_made", 0))))
             retry_rate = round(
-                float(getattr(client, "tts_retries_total", 0)) / tts_requests,
+                float(getattr(tts_provider, "retries_total", 0)) / tts_requests,
                 4,
             )
     except Exception as exc:  # noqa: BLE001
@@ -814,11 +852,11 @@ def main(argv: list[str] | None = None) -> int:
         # dashboards and rollback gates never receive empty classification.
         failure_kind = str(failure_kind or "").strip().lower() or ERROR_KIND_UNKNOWN
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
-        estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
-        if client is not None:
-            tts_requests = float(max(1, int(getattr(client, "tts_requests_made", client.requests_made))))
+        estimated_cost_usd = float(getattr(tts_provider, "estimated_cost_usd", 0.0))
+        if tts_provider is not None:
+            tts_requests = float(max(1, int(getattr(tts_provider, "requests_made", 0))))
             retry_rate = round(
-                float(getattr(client, "tts_retries_total", 0)) / tts_requests,
+                float(getattr(tts_provider, "retries_total", 0)) / tts_requests,
                 4,
             )
     finally:
@@ -846,7 +884,9 @@ def main(argv: list[str] | None = None) -> int:
                 "script_started_at": script_started_at_from_manifest,
                 "script_completed_at": script_completed_at_from_manifest,
                 "segment_count": int(max(0, segment_count)),
-                "requests_made": int(getattr(client, "requests_made", 0) if client is not None else 0),
+                "tts_provider": str(getattr(tts_provider, "provider_name", audio_cfg.tts_provider)).strip().lower(),
+                "tts_model": str(getattr(tts_provider, "model_name", audio_cfg.model)).strip(),
+                "requests_made": int(getattr(tts_provider, "requests_made", 0)),
                 "estimated_cost_usd": round(float(estimated_cost_usd), 4),
                 "elapsed_seconds": round(elapsed, 2),
                 "phase_seconds": {

@@ -51,6 +51,33 @@ class TTSSegmentationTests(unittest.TestCase):
             self.assertEqual(voice_for("Host1", speaker_name="Laura Martinez"), "cedar")
             self.assertEqual(voice_for("Host2", speaker_name="Diego Herrera"), "marin")
 
+    def test_voice_mapping_alibaba_provider_uses_provider_specific_defaults(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TTS_ALIBABA_MALE_VOICE": "Ethan",
+                "TTS_ALIBABA_FEMALE_VOICE": "Cherry",
+                "TTS_ALIBABA_DEFAULT_VOICE": "Cherry",
+            },
+            clear=False,
+        ):
+            self.assertEqual(voice_for("Host1", provider="alibaba"), "Ethan")
+            self.assertEqual(voice_for("Host2", provider="alibaba"), "Cherry")
+
+    def test_voice_mapping_alibaba_provider_gender_hints(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TTS_VOICE_ASSIGNMENT_MODE": "auto",
+                "TTS_ALIBABA_MALE_VOICE": "Ethan",
+                "TTS_ALIBABA_FEMALE_VOICE": "Cherry",
+                "TTS_ALIBABA_DEFAULT_VOICE": "Cherry",
+            },
+            clear=False,
+        ):
+            self.assertEqual(voice_for("Host1", provider="alibaba", speaker_name="Laura Martinez"), "Cherry")
+            self.assertEqual(voice_for("Host2", provider="alibaba", speaker_name="Diego Herrera"), "Ethan")
+
 
 if __name__ == "__main__":
     unittest.main()

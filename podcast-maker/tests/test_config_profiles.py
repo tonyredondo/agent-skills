@@ -60,6 +60,67 @@ class ConfigProfilesTests(unittest.TestCase):
             cfg = AudioConfig.from_env(profile_name="short")
         self.assertEqual(cfg.chunk_lines, 0)
 
+    def test_audio_config_provider_defaults_to_openai(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TTS_PROVIDER", None)
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.tts_provider, "openai")
+
+    def test_audio_config_provider_invalid_value_falls_back_openai(self) -> None:
+        with mock.patch.dict(os.environ, {"TTS_PROVIDER": "unknown-provider"}, clear=False):
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.tts_provider, "openai")
+
+    def test_audio_config_openai_model_precedence(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TTS_PROVIDER": "openai",
+                "TTS_MODEL": "legacy-model",
+                "TTS_OPENAI_MODEL": "openai-model",
+                "TTS_ALIBABA_MODEL": "alibaba-model",
+            },
+            clear=False,
+        ):
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.model, "openai-model")
+        self.assertEqual(cfg.tts_openai_model, "openai-model")
+        self.assertEqual(cfg.tts_alibaba_model, "alibaba-model")
+
+    def test_audio_config_alibaba_model_precedence(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TTS_PROVIDER": "alibaba",
+                "TTS_MODEL": "legacy-model",
+                "TTS_ALIBABA_MODEL": "alibaba-model",
+                "TTS_OPENAI_MODEL": "openai-model",
+            },
+            clear=False,
+        ):
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.model, "alibaba-model")
+        self.assertEqual(cfg.tts_openai_model, "openai-model")
+        self.assertEqual(cfg.tts_alibaba_model, "alibaba-model")
+
+    def test_audio_config_alibaba_model_falls_back_to_tts_model(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"TTS_PROVIDER": "alibaba", "TTS_MODEL": "legacy-model", "TTS_ALIBABA_MODEL": ""},
+            clear=False,
+        ):
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.tts_alibaba_model, "legacy-model")
+        self.assertEqual(cfg.model, "legacy-model")
+
+    def test_audio_config_alibaba_default_model_without_legacy_override(self) -> None:
+        with mock.patch.dict(os.environ, {"TTS_PROVIDER": "alibaba"}, clear=False):
+            os.environ.pop("TTS_MODEL", None)
+            os.environ.pop("TTS_ALIBABA_MODEL", None)
+            cfg = AudioConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.tts_alibaba_model, "qwen3-tts-instruct-flash")
+        self.assertEqual(cfg.model, "qwen3-tts-instruct-flash")
+
     def test_audio_config_speed_and_phase_defaults(self) -> None:
         cfg = AudioConfig.from_env(profile_name="short")
         self.assertEqual(cfg.tts_speed_default, 1.0)
