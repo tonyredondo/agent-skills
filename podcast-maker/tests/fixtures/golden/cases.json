@@ -1,0 +1,32 @@
+[
+  {
+    "case_name": "short_script",
+    "profile": "short",
+    "source_path": "tests/fixtures/golden/sources/short_source.txt",
+    "target_minutes": 5
+  },
+  {
+    "case_name": "standard_script",
+    "profile": "standard",
+    "source_path": "tests/fixtures/golden/sources/standard_source.txt",
+    "target_minutes": 15
+  },
+  {
+    "case_name": "long_script",
+    "profile": "long",
+    "source_path": "tests/fixtures/golden/sources/long_source.txt",
+    "target_minutes": 30
+  },
+  {
+    "case_name": "multi_topic_script",
+    "profile": "standard",
+    "source_path": "tests/fixtures/golden/sources/multi_topic_source.txt",
+    "target_minutes": 15
+  },
+  {
+    "case_name": "dense_technical_script",
+    "profile": "standard",
+    "source_path": "tests/fixtures/golden/sources/dense_technical_source.txt",
+    "target_minutes": 15
+  }
+]

@@ -1,0 +1,5 @@
+Queremos un episodio que combine productividad personal, comunicacion de equipo y calidad tecnica.
+En productividad, explica bloques cortos con objetivos medibles.
+En comunicacion, destaca acuerdos escritos, contexto compartido y seguimiento semanal.
+En calidad tecnica, enfatiza pruebas automaticas, despliegue gradual y retroalimentacion temprana.
+Conecta los tres temas para mostrar como reducen cuellos de botella cuando se aplican juntos.

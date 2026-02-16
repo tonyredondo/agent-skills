@@ -1,0 +1,6 @@
+Diseña un episodio largo que explique una estrategia de transformacion operativa por fases.
+La fase uno cubre diagnostico, riesgos, dependencias y criterios de priorizacion.
+La fase dos describe experimentos controlados con metricas, costos y limites de tiempo.
+La fase tres detalla consolidacion de aprendizaje, gobernanza y planes de escalado.
+Incluye tambien contingencias para fallos de proveedores, bloqueos tecnicos y cambios de alcance.
+Asegura que el cierre tenga una seccion de resumen con acciones concretas para equipos en distintos niveles de madurez.

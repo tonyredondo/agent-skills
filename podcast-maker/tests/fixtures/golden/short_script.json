@@ -1,0 +1,40 @@
+{
+  "lines": [
+    {
+      "speaker": "Carlos",
+      "role": "Host1",
+      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "text": "Hoy resumimos un tema concreto con ejemplos claros para empezar rapido."
+    },
+    {
+      "speaker": "Lucia",
+      "role": "Host2",
+      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "text": "Tambien vemos errores comunes y como evitarlos en un flujo diario."
+    },
+    {
+      "speaker": "Carlos",
+      "role": "Host1",
+      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "text": "Incluimos una mini lista de pasos para aplicar desde hoy."
+    },
+    {
+      "speaker": "Lucia",
+      "role": "Host2",
+      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "text": "En Resumen: entender el objetivo, ejecutar con orden y revisar resultados."
+    },
+    {
+      "speaker": "Carlos",
+      "role": "Host1",
+      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "text": "Gracias por acompanarnos en este episodio corto y practico."
+    },
+    {
+      "speaker": "Lucia",
+      "role": "Host2",
+      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "text": "Nos vemos en el proximo episodio."
+    }
+  ]
+}

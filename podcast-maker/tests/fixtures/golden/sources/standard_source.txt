@@ -1,0 +1,5 @@
+Prepara un episodio de duracion media sobre ejecucion de proyectos en equipos pequenos.
+Debe cubrir definicion de objetivos, preparacion de datos, validacion de hipotesis y seguimiento de resultados.
+Incluye ejemplos de decisiones diarias: cuando simplificar alcance, cuando pausar y cuando iterar.
+Agrega recomendaciones para reducir retrabajo y mejorar visibilidad del avance.
+Mantener un estilo dialogado entre dos hosts con preguntas y respuestas claras.

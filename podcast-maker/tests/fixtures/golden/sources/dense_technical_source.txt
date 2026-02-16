@@ -1,0 +1,5 @@
+Produce un episodio tecnico sobre arquitectura orientada a eventos para plataformas de producto.
+Debes cubrir particionado, orden de mensajes, idempotencia y deduplicacion en consumidores.
+Incluye observabilidad con tracing distribuido, metricas por etapa y correlacion por request id.
+Describe patrones de resiliencia: retries con backoff, timeouts por capa y circuit breaker.
+Explica gobernanza de despliegues con canary, rollback automatico por SLO y validaciones previas de calidad.

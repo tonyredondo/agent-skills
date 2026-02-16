@@ -1,0 +1,9 @@
+.tracecov/
+.golden_candidates/
+.script_checkpoints/
+.audio_checkpoints/
+.podcast_slo_history.jsonl
+__pycache__/
+*.pyc
+.DS_Store
+*.cover

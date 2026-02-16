@@ -1,0 +1,37 @@
+{
+  "dense_technical_script": {
+    "line_count": 10,
+    "word_count": 100,
+    "unique_speakers": 2,
+    "has_en_resumen": true,
+    "farewell_in_last_3": true
+  },
+  "long_script": {
+    "line_count": 13,
+    "word_count": 126,
+    "unique_speakers": 2,
+    "has_en_resumen": true,
+    "farewell_in_last_3": true
+  },
+  "multi_topic_script": {
+    "line_count": 9,
+    "word_count": 84,
+    "unique_speakers": 2,
+    "has_en_resumen": true,
+    "farewell_in_last_3": true
+  },
+  "short_script": {
+    "line_count": 6,
+    "word_count": 58,
+    "unique_speakers": 2,
+    "has_en_resumen": true,
+    "farewell_in_last_3": true
+  },
+  "standard_script": {
+    "line_count": 10,
+    "word_count": 101,
+    "unique_speakers": 2,
+    "has_en_resumen": true,
+    "farewell_in_last_3": true
+  }
+}
