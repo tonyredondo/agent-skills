@@ -2,8 +2,12 @@
 .golden_candidates/
 .script_checkpoints/
 .audio_checkpoints/
+.e2e_out/
 .podcast_slo_history.jsonl
+podcast_run_logs.txt
+debug_bundle_*.zip
 __pycache__/
 *.pyc
 .DS_Store
 *.cover
+*.tmp.mp3

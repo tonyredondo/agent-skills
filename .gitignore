@@ -1,1 +1,39 @@
+# macOS
 .DS_Store
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Coverage and test artifacts
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+
+# Skill runtime artifacts (applies recursively to skill folders)
+**/.script_checkpoints/
+**/.audio_checkpoints/
+**/.golden_candidates/
+**/.tracecov/
+**/.e2e_out/
+**/.podcast_slo_history.jsonl
+**/podcast_run_logs.txt
+**/debug_bundle_*.zip
+
+# Common temp/editor files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
