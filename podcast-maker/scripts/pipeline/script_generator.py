@@ -780,6 +780,8 @@ class ScriptGenerator:
             presplit_threshold = max(0.0, _env_float("SCRIPT_TRUNCATION_PRESSURE_PRESPLIT_THRESHOLD", 0.28))
             parts = self._split_chunk_for_recovery(source_chunk)
             if pressure >= presplit_threshold and len(parts) >= 2:
+                # When truncation pressure is high, pre-splitting reduces parse
+                # risk before we even spend a full-chunk request.
                 self._truncation_pressure_presplit_events = int(
                     getattr(self, "_truncation_pressure_presplit_events", 0)
                 ) + 1
@@ -840,6 +842,8 @@ class ScriptGenerator:
                 raise
             parts = self._split_chunk_for_recovery(source_chunk)
             if len(parts) < 2:
+                # Unsplittable chunk falls back to a cheaper whole-chunk retry
+                # before escalating to a hard failure.
                 self._mark_fallback_mode(stage=stage, mode="whole_chunk_retry")
                 self.logger.warn(
                     "chunk_recovery_whole_retry_start",
@@ -1174,6 +1178,8 @@ class ScriptGenerator:
             primary_threshold = int(round(float(min_words) * fallback_min_ratio))
             secondary_threshold = int(round(float(min_words) * fallback_secondary_ratio))
             if current_words >= primary_threshold:
+                # Near-target path prioritizes deterministic closure and minimal
+                # additive lines over more model calls.
                 fallback_lines = self._deterministic_continuation_fallback_lines(lines_so_far=lines_so_far)
                 if fallback_lines:
                     self._continuation_fallback_closures = int(
@@ -1205,6 +1211,8 @@ class ScriptGenerator:
                     )
                     return extension_lines
             elif current_words >= secondary_threshold:
+                # Mid-tier threshold allows deterministic extension only, keeping
+                # quality while avoiding another fragile continuation request.
                 extension_lines = self._deterministic_continuation_extension_lines(
                     lines_so_far=lines_so_far,
                     min_words=min_words,
@@ -2170,6 +2178,8 @@ class ScriptGenerator:
         except InterruptedError:
             if state:
                 try:
+                    # Persist interruption metadata before bubbling up so
+                    # orchestrators can resume without ambiguity.
                     state["status"] = "interrupted"
                     state["failure_kind"] = ERROR_KIND_INTERRUPTED
                     state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
@@ -2330,6 +2340,8 @@ class ScriptGenerator:
             elif empty_output_failures > 0:
                 failure_kind = ERROR_KIND_OPENAI_EMPTY_OUTPUT
             elif (schema_validation_failures + script_json_parse_failures) > 0:
+                # Group parse/schema drift under a stable invalid-schema bucket
+                # for retry policy and incident trend analysis.
                 failure_kind = ERROR_KIND_INVALID_SCHEMA
             if state:
                 try:

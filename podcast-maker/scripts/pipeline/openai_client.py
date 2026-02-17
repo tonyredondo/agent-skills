@@ -354,8 +354,12 @@ class OpenAIClient:
             and self.circuit_breaker_failures > 0
             and self.consecutive_script_failures >= self.circuit_breaker_failures
         ):
+            # Circuit breaker avoids burning budget when upstream service is
+            # likely unavailable and recent failures are consecutive.
             raise RuntimeError("Circuit breaker open for script requests")
         for attempt in range(1, retries + 1):
+            # Reserve budget before request dispatch so accounting reflects real
+            # attempted workload, even if transport fails immediately.
             self._reserve_request_slot(request_kind=request_kind)
             retry_is_5xx = False
             started = time.time()
@@ -413,6 +417,8 @@ class OpenAIClient:
                 (self.tts_backoff_base_ms / 1000.0) * (2 ** max(0, attempt - 1)),
             )
             if retry_is_5xx:
+                # 5xx bursts tend to indicate service pressure; increase delay
+                # to reduce retry storms against a degraded upstream.
                 backoff_s = min(self.tts_backoff_max_ms / 1000.0, backoff_s * 1.6)
             if request_kind == "script":
                 with self._state_lock:
@@ -599,6 +605,8 @@ class OpenAIClient:
         )
         text = _extract_text_from_responses_payload(raw)
         if not text:
+            # Empty payloads may still be recoverable via lower output budget
+            # retries that nudge the model to return non-empty JSON.
             text = self._recover_empty_script_output(
                 prompt=prompt,
                 schema=schema,
@@ -715,6 +723,8 @@ class OpenAIClient:
                 )
                 repaired_text = _extract_text_from_responses_payload(raw_repair)
                 if not repaired_text:
+                    # Missing repair payload counts as inconclusive attempt and
+                    # falls through to the next retry budget.
                     continue
                 repaired_candidate, _, _ = _extract_json_object_candidate(repaired_text)
                 try:
@@ -794,6 +804,8 @@ class OpenAIClient:
         for attempt in range(1, self.tts_retries + 1):
             if cancel_check is not None and cancel_check():
                 raise InterruptedError("Interrupted before TTS request")
+            # Reserve request slot before transport call for consistent budget
+            # accounting across successful and failed attempts.
             self._reserve_request_slot(request_kind="tts")
             retry_is_5xx = False
             started = time.time()
@@ -846,6 +858,8 @@ class OpenAIClient:
                 (self.tts_backoff_base_ms / 1000.0) * (2 ** max(0, attempt - 1)),
             )
             if retry_is_5xx:
+                # 5xx responses typically recover slower than rate-limit jitter,
+                # so apply a stronger backoff multiplier.
                 backoff_s = min(self.tts_backoff_max_ms / 1000.0, backoff_s * 1.6)
             with self._state_lock:
                 self.tts_retries_total += 1

@@ -405,6 +405,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if manifest_mismatch_error is not None:
+            # Enforce manifest/script-path consistency before any audio side
+            # effects so resume semantics stay deterministic.
             raise manifest_mismatch_error
         # Validate and normalize script structure before any audio work starts.
         with open(args.script_path, "r", encoding="utf-8") as f:
@@ -629,6 +631,8 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as audio_exc:  # noqa: BLE001
                 audio_orchestrated_retry_attempts_used = audio_attempt
                 failure_kind_candidate = _classify_audio_failure_kind(audio_exc)
+                # Retry is intentionally constrained to transient/recoverable
+                # failure kinds to avoid masking deterministic defects.
                 should_retry = bool(
                     audio_attempt < max_audio_attempts
                     and failure_kind_candidate in recoverable_audio_kinds
@@ -732,6 +736,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.warn("podcast_interrupted", error=str(exc))
         status = "interrupted"
         exit_code = 130
+        # Preserve interruption as a first-class terminal state because callers
+        # use exit code 130 to decide whether to resume automatically.
         failure_kind = ERROR_KIND_INTERRUPTED
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
         estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
@@ -739,6 +745,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("podcast_failed_operation", error=str(exc), error_kind=exc.error_kind)
         status = "failed"
         exit_code = 1
+        # Pre-TTS operation errors are treated as setup/precheck failures rather
+        # than synthesis failures to keep incident triage precise.
         stuck_abort = False
         failure_kind = exc.error_kind
         audio_stage = "failed_before_tts"
@@ -770,6 +778,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         status = "failed"
         exit_code = 1
+        # Batch errors carry per-segment kinds and become the canonical signal
+        # for orchestrated audio retry decisions upstream.
         stuck_abort = bool(exc.stuck_abort)
         failure_kind = exc.primary_kind
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
@@ -800,6 +810,8 @@ def main(argv: list[str] | None = None) -> int:
         status = "failed"
         exit_code = 1
         stuck_abort = False
+        # Keep failure_kind populated even for unexpected exceptions so
+        # dashboards and rollback gates never receive empty classification.
         failure_kind = str(failure_kind or "").strip().lower() or ERROR_KIND_UNKNOWN
         audio_stage = "failed_during_tts" if handoff_to_audio_started else "failed_before_tts"
         estimated_cost_usd = client.estimated_cost_usd if client is not None else 0.0
@@ -849,6 +861,8 @@ def main(argv: list[str] | None = None) -> int:
                 "audio_orchestrated_retry_events": list(audio_orchestrated_retry_events),
                 "failure_kind": failure_kind,
             }
+            # Keep a compact stage-level status map for tooling that does not
+            # parse full per-stage detail objects.
             fallback_summary["status_by_stage"] = {
                 "script": "completed" if validated is not None else "unknown",
                 "audio": (
@@ -878,6 +892,8 @@ def main(argv: list[str] | None = None) -> int:
                 logger.warn("podcast_run_summary_write_failed", error=str(exc), path=run_summary_path)
         if run_manifest_initialized and manifest_v2_enabled:
             try:
+                # Manifest stage status is normalized to terminal values because
+                # downstream readers only understand this reduced state machine.
                 audio_stage_status = status if status in {"completed", "failed", "interrupted"} else "failed"
                 update_manifest(
                     checkpoint_dir=script_cfg.checkpoint_dir,

@@ -439,6 +439,8 @@ def _run_generation_with_orchestrated_retry(
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001
+            # Failure signals from checkpoint artifacts often carry richer
+            # classifier hints than the top-level exception message alone.
             signals = _load_script_failure_signals(
                 checkpoint_dir,
                 output_path,
@@ -465,6 +467,7 @@ def _run_generation_with_orchestrated_retry(
                 client=client,
                 client_failure_deltas=deltas,
             )
+            # Keep retries narrow: only known recoverable kinds are retried.
             should_retry = bool(
                 attempt < attempts
                 and failure_kind is not None
@@ -488,6 +491,8 @@ def _run_generation_with_orchestrated_retry(
                 failure_kind=failure_kind,
                 recoverable_kinds=sorted(recoverable_kinds),
             )
+            # Force checkpoint-aware resume flags so follow-up attempts reuse
+            # existing progress instead of recomputing completed chunks.
             use_resume = True
             use_resume_force = True
             if cancel_check and cancel_check():
@@ -940,6 +945,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.warn("script_interrupted", error=str(exc))
         status = "interrupted"
         exit_code = 130
+        # Signals persisted by lower layers preserve the most recent classified
+        # failure context even when interruption surfaces as a generic exception.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -964,6 +971,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("script_failed_operation", error=str(exc), error_kind=exc.error_kind)
         status = "failed"
         exit_code = 1
+        # Prefer checkpoint-stored failure kind when available because it can be
+        # more specific than the coarse operation-level exception taxonomy.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -989,6 +998,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("script_failed", error=str(exc))
         status = "failed"
         exit_code = 1
+        # Unknown failure path still pulls checkpoint signals so summaries remain
+        # usable by orchestration and triage tooling.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -1013,6 +1024,8 @@ def main(argv: list[str] | None = None) -> int:
         elif isinstance(signal_retry_rate, (int, float)):
             retry_rate = round(float(signal_retry_rate), 4)
         if failure_kind is None:
+            # Last-resort taxonomy keeps dashboards and policy checks stable even
+            # when the exact new error class was not mapped yet.
             if stuck_abort:
                 failure_kind = ERROR_KIND_STUCK
             elif invalid_schema:
@@ -1076,6 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(existing_summary, dict):
                         existing_token = str(existing_summary.get("run_token", "")).strip()
                         if not existing_token or existing_token == run_token:
+                            # Keep any extra fields written earlier in the run
+                            # while overriding core fields with current fallback values.
                             fallback_summary = {**existing_summary, **fallback_summary}
                 except Exception:
                     pass
@@ -1114,6 +1129,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             try:
                 stage_status = status
+                # Manifest expects terminal enum values for script stage.
+                # Defensive normalization avoids leaking unknown status strings.
                 if stage_status not in {"completed", "failed", "interrupted"}:
                     stage_status = "failed"
                 update_manifest(

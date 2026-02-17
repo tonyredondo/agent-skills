@@ -828,6 +828,8 @@ class TTSSynthesizer:
                         if has_audio_file and expected_checksum and expected_checksum != actual_checksum:
                             checksum_mismatch = True
                     if status == "done":
+                        # "done" must still be validated against actual files to
+                        # avoid trusting stale manifest flags after crashes.
                         if checksum_read_error:
                             seg["status"] = "pending"
                             seg["error"] = "output_unreadable_on_resume"
@@ -1085,6 +1087,8 @@ class TTSSynthesizer:
                                         seg["checksum_sha256"] = self._file_sha256(out_path)
                                         seg["updated_at"] = int(time.time())
                                         manifest["updated_at"] = int(time.time())
+                                        # Persist after each segment completion so
+                                        # resume can continue from exact progress.
                                         persist_manifest()
                                     last_progress_at = time.time()
                                     self.logger.info(
@@ -1135,6 +1139,8 @@ class TTSSynthesizer:
                     finally:
                         if abort_chunk:
                             try:
+                                # Do not wait on aborted workers: cancellation is
+                                # best-effort and we want fast interruption paths.
                                 executor.shutdown(wait=False, cancel_futures=True)
                             except TypeError:
                                 executor.shutdown(wait=False)
@@ -1176,6 +1182,8 @@ class TTSSynthesizer:
                 "tts_phase_speed_stats": phase_metrics["phase_speed_stats"],
             }
             if failed_segments:
+                # Aggregate failure kinds keeps orchestrator policy simple and
+                # still preserves per-segment detail inside manifest.
                 failed_kinds = summarize_failure_kinds(
                     seg.get("error_kind", ERROR_KIND_UNKNOWN) for seg in failed_segments
                 )
@@ -1218,6 +1226,8 @@ class TTSSynthesizer:
                 if not current_failure_kind:
                     current_failure_kind = ERROR_KIND_UNKNOWN
                 failed_kinds = summarize_failure_kinds([current_failure_kind])
+                # Resume-blocked failures preserve existing manifest content so
+                # operators can inspect and decide whether to force-resume.
                 preserve_existing_manifest = exc.error_kind == ERROR_KIND_RESUME_BLOCKED
                 if "manifest" in locals() and isinstance(manifest, dict):
                     if not preserve_existing_manifest:
@@ -1287,6 +1297,8 @@ class TTSSynthesizer:
             try:
                 if "manifest" in locals() and isinstance(manifest, dict):
                     with lock:
+                        # Interruption status is persisted explicitly so upper
+                        # layers can map this to exit code 130 semantics.
                         manifest["status"] = "interrupted"
                         manifest["updated_at"] = int(time.time())
                         persist_manifest()
