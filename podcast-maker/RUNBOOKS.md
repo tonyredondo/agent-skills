@@ -12,6 +12,11 @@ Actions:
 2. Increase `SCRIPT_MAX_CONTEXT_LINES` and/or lower `SCRIPT_MIN_WORD_DELTA`.
 3. Increase `SCRIPT_NO_PROGRESS_ROUNDS` when content grows slowly but still makes progress.
 4. If source is too short, enrich input and use `--resume-force` (guide by default profile: `short=0.35`, `standard=0.50`, `long=0.60` target-word ratio).
+5. If failures are transient/quality-related, tune script orchestrated retry controls:
+   - `SCRIPT_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+   - `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+   - `SCRIPT_ORCHESTRATED_RETRY_BACKOFF_MS` (default `400`)
+   - `SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS`
 
 ## 2) TTS stuck or very slow
 
@@ -27,6 +32,11 @@ Actions:
 5. Resume with:
    - `./scripts/make_podcast.py --resume script.json outdir episode`
    - if script/audio are split across commands, use the same `--episode-id` in both commands
+6. Tune audio orchestrated retry controls:
+   - `AUDIO_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+   - `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+   - `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` (default `1200`)
+   - `AUDIO_ORCHESTRATED_RETRY_FAILURE_KINDS`
 
 ## 3) Checkpoint corrupted or lock orphaned
 
@@ -77,6 +87,8 @@ Actions:
 3. Rebuild golden candidates and rerun gate:
    - `python3 ./scripts/run_golden_pipeline.py --candidate-dir ./.golden_candidates`
    - `python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates`
+4. If candidate generation fails due auth/network or source-sizing constraints, run deterministic fallback gate:
+   - `python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates --allow-fixture-fallback`
 
 ## 7) Script quality gate blocks audio start
 
@@ -88,7 +100,11 @@ Symptoms:
 
 Actions:
 1. Inspect quality report:
-   - `<outdir>/.audio_checkpoints/<episode>/quality_report.json`
+   - script-stage reports:
+     - `<script_checkpoint_dir>/<episode>/quality_report_initial.json`
+     - `<script_checkpoint_dir>/<episode>/quality_report.json`
+   - audio-stage report:
+     - `<outdir>/.audio_checkpoints/<episode>/quality_report.json`
 2. Review failed checks under `rules` and score thresholds under `scores`.
 3. Check repair metadata in the report:
    - `initial_pass`, `repair_attempted`, `repair_succeeded`, `repair_changed_script`, `repair_attempts_used`, `repair_history`
@@ -121,7 +137,20 @@ Actions:
    - `SCRIPT_COMPLETENESS_CHECK_V2=0` (disable internal truncation check/repair)
    - `RUN_MANIFEST_V2=0` (disable run manifest writes)
 
-## 8) Invalid basename argument
+## 8) Run orchestrator retries (`run_podcast.py`)
+
+Symptoms:
+- script stage fails intermittently in end-to-end runs
+- rerun succeeds when invoking `make_script.py` manually
+
+Actions:
+1. Increase orchestrator script attempts:
+   - `RUN_PODCAST_SCRIPT_ATTEMPTS` (default `1`)
+2. Keep a stable `--episode-id` (or consistent basename) so retries reuse the same checkpoint lineage.
+3. For shell portability, use:
+   - `./scripts/make_podcast.sh script.json outdir episode_name --profile standard --resume`
+
+## 9) Invalid basename argument
 
 Symptoms:
 - `make_podcast.py` fails immediately with argument parsing error
@@ -132,7 +161,7 @@ Actions:
 2. Do not pass path-like values such as `../episode` or `foo/bar`.
 3. Keep directory routing in `outdir`; keep `basename` as name only.
 
-## 9) Error kind map (triage rapido)
+## 10) Error kind map (triage rapido)
 
 Use this table to classify failures consistently in incidents and rollbacks.
 `stuck_abort` is derived from structured failure signals, not from log wording.
@@ -160,7 +189,7 @@ Quick inspection:
 - Pipeline-level status: `<script_checkpoint_dir>/<episode>/run_manifest.json` and `pipeline_summary.json`
 - Run-level event kind: `SLO_HISTORY_PATH` JSONL field `failure_kind`
 
-## 10) Quick jq summaries
+## 11) Quick jq summaries
 
 Use these commands to spot trends quickly from the latest events.
 
@@ -185,7 +214,7 @@ tail -n 200 "$HIST" | jq -s '
 }'
 ```
 
-## 11) Export debug bundle for on-call
+## 12) Export debug bundle for on-call
 
 Use this when support/on-call asks for a single bundle with all diagnostics.
 

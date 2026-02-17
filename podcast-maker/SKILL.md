@@ -32,15 +32,19 @@ Generate conversational script JSON:
 Generate podcast audio:
 ```
 ./scripts/make_podcast.py /path/to/script.json /output/dir episode_name
+./scripts/make_podcast.sh /path/to/script.json /output/dir episode_name --profile standard --resume
 ```
 
 `episode_name` (`basename`) must be a file name only (no path separators).
 For split runs, pass the same `--episode-id` in both commands to avoid artifact collisions.
+`make_podcast.sh` is the official wrapper and forwards extra flags to `make_podcast.py`.
 
 Output:
 - `/output/dir/episode_name_norm_eq.mp3` (default final)
 - `/output/dir/episode_name_raw_only.mp3` (when ffmpeg is unavailable and `--allow-raw-only` or `ALLOW_RAW_ONLY=1` is set)
-- `<audio_checkpoint_dir>/<episode>/quality_report.json` (script quality gate report)
+- `<script_checkpoint_dir>/<episode>/quality_report_initial.json` (script-stage gate, initial evaluation)
+- `<script_checkpoint_dir>/<episode>/quality_report.json` (script-stage gate, final report)
+- `<audio_checkpoint_dir>/<episode>/quality_report.json` (pre-audio gate report)
 - `<audio_checkpoint_dir>/<episode>/normalized_script.json` (exact normalized script consumed by TTS)
 
 ## Entrypoints
@@ -127,6 +131,7 @@ Useful flags:
 - `--allow-raw-only` (audio only, continue without ffmpeg post-processing)
 
 Useful env vars:
+- Canonical reference: `ENV_REFERENCE.md` (single source for defaults from `config.py` + entrypoints)
 - `LOG_LEVEL=INFO|DEBUG`
 - `LOG_HEARTBEAT_SECONDS=15`
 - `LOG_DEBUG_EVENTS=1`
@@ -137,6 +142,11 @@ Useful env vars:
 - `SCRIPT_PRECISION_PROFILE=strict|balanced` (default `strict`)
 - `SCRIPT_CLOSING_STYLE=brief|warm` (default `brief`)
 - `SCRIPT_RETRIES`, `SCRIPT_TIMEOUT_SECONDS`
+- Script orchestrated retries (entrypoint-level):
+  - `SCRIPT_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+  - `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+  - `SCRIPT_ORCHESTRATED_RETRY_BACKOFF_MS` (default `400`)
+  - `SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS` (default `openai_empty_output,invalid_schema,script_quality_rejected,script_completeness_failed`)
 - `SCRIPT_ADAPTIVE_DEFAULTS=0|1` (default `1`)
 - `SCRIPT_PRE_SUMMARY_TRIGGER_WORDS`, `SCRIPT_PRE_SUMMARY_TARGET_WORDS`
 - `SCRIPT_PRE_SUMMARY_MAX_ROUNDS`
@@ -192,6 +202,13 @@ Useful env vars:
 - `SCRIPT_QUALITY_REQUIRE_SUMMARY`, `SCRIPT_QUALITY_REQUIRE_CLOSING`
 - `SCRIPT_QUALITY_MIN_OVERALL_SCORE`, `SCRIPT_QUALITY_MIN_CADENCE_SCORE`, `SCRIPT_QUALITY_MIN_LOGIC_SCORE`, `SCRIPT_QUALITY_MIN_CLARITY_SCORE`
 - `SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS` (default `1400`), `SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS`
+- Audio orchestrated retries (entrypoint-level):
+  - `AUDIO_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+  - `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+  - `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` (default `1200`)
+  - `AUDIO_ORCHESTRATED_RETRY_FAILURE_KINDS` (default `timeout,network,rate_limit`)
+- Full orchestrator:
+  - `RUN_PODCAST_SCRIPT_ATTEMPTS` (default `1`, retries script stage in `run_podcast.py`)
 - `ALLOW_RAW_ONLY=1`
 - `RETENTION_CHECKPOINT_DAYS`, `RETENTION_LOG_DAYS`, `RETENTION_INTERMEDIATE_AUDIO_DAYS`
 
@@ -267,6 +284,7 @@ Expected `script.json`:
 - Golden regression flow:
   - `python3 ./scripts/run_golden_pipeline.py --candidate-dir ./.golden_candidates`
   - `python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates`
+  - `run_golden_pipeline.py` requires valid OpenAI credentials and sources sized for current source-validation policy; if local constraints block generation, use `check_golden_suite.py --allow-fixture-fallback` for deterministic structural checks
 - Debug bundle export:
   - `python3 ./scripts/export_debug_bundle.py <episode_id> --script-checkpoint-dir ./.script_checkpoints --audio-checkpoint-dir ./out/.audio_checkpoints --script-path ./script.json --source-path ./source.txt --log-path ./podcast_run_logs.txt`
   - use `<episode_id>` equal to explicit `--episode-id` (or audio basename if no override was used)

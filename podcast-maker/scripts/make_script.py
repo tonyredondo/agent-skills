@@ -21,6 +21,7 @@ from pipeline.errors import (
     ERROR_KIND_UNKNOWN,
     ScriptOperationError,
 )
+from pipeline.gate_action import default_script_gate_action, resolve_script_gate_action
 from pipeline.housekeeping import cleanup_dir, ensure_min_free_disk
 from pipeline.io_utils import read_text_file_with_fallback
 from pipeline.logging_utils import Logger
@@ -97,13 +98,8 @@ def _episode_id_arg(value: str) -> str:
 
 
 def _default_script_gate_action(*, script_profile_name: str) -> str:
-    gate_profile = str(os.environ.get("SCRIPT_QUALITY_GATE_PROFILE", "") or "").strip().lower()
-    if gate_profile == "production_strict":
-        return "enforce"
-    profile = str(script_profile_name or "standard").strip().lower()
-    if profile in {"standard", "long"}:
-        return "enforce"
-    return "warn"
+    # Backward-compatible alias kept for tests and external callers.
+    return default_script_gate_action(script_profile_name=script_profile_name)
 
 
 def _load_script_failure_signals(
@@ -634,12 +630,11 @@ def main(argv: list[str] | None = None) -> int:
                 retry_enabled=script_orchestrated_retry_enabled,
             )
         )
-        script_gate_action = os.environ.get(
-            "SCRIPT_QUALITY_GATE_SCRIPT_ACTION",
-            _default_script_gate_action(script_profile_name=script_cfg.profile_name),
-        ).strip().lower()
-        if script_gate_action not in {"off", "warn", "enforce"}:
-            script_gate_action = _default_script_gate_action(script_profile_name=script_cfg.profile_name)
+        gate_cfg = ScriptQualityGateConfig.from_env(profile_name=script_cfg.profile_name)
+        script_gate_action = resolve_script_gate_action(
+            script_profile_name=script_cfg.profile_name,
+            fallback_action=gate_cfg.action,
+        )
         script_gate_action_effective = script_gate_action
         quality_gate_executed = script_gate_action in {"warn", "enforce"}
         if script_gate_action in {"warn", "enforce"}:
@@ -662,7 +657,6 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 with open(result.output_path, "r", encoding="utf-8") as f:
                     generated_payload = json.load(f)
-                gate_cfg = ScriptQualityGateConfig.from_env(profile_name=script_cfg.profile_name)
                 gate_cfg = dataclasses.replace(gate_cfg, action=script_gate_action)
                 validated_payload = validate_script_payload(generated_payload)
                 hardened_lines = harden_script_structure(

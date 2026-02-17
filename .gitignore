@@ -30,6 +30,8 @@ htmlcov/
 **/.podcast_slo_history.jsonl
 **/podcast_run_logs.txt
 **/debug_bundle_*.zip
+**/tmp_smoke_*/
+**/tmp_debug_*/
 
 # Common temp/editor files
 *.log

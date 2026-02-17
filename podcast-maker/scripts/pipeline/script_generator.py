@@ -34,7 +34,7 @@ from .schema import (
     validate_script_payload,
 )
 from .script_checkpoint import ScriptCheckpointStore
-from .script_chunker import context_tail, split_source_chunks, target_chunk_count
+from .script_chunker import split_source_chunks, target_chunk_count
 from .script_postprocess import (
     dedupe_append,
     evaluate_script_completeness,
@@ -44,126 +44,18 @@ from .script_postprocess import (
     harden_script_structure,
     repair_script_completeness,
 )
+from .script_generator_helpers import (
+    atomic_write_text as _atomic_write_text,
+    default_completeness_report as _default_completeness_report,
+    env_bool as _env_bool,
+    env_float as _env_float,
+    env_int as _env_int,
+    migrate_checkpoint_lines as _migrate_checkpoint_lines,
+    phase_seconds_with_generation as _phase_seconds_with_generation,
+    recent_dialogue as _recent_dialogue,
+    sum_int_maps as _sum_int_maps,
+)
 from .run_manifest import pipeline_summary_path, resolve_episode_id, run_manifest_path
-
-
-def _atomic_write_text(path: str, value: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(value)
-        if not value.endswith("\n"):
-            f.write("\n")
-    os.replace(tmp, path)
-
-
-def _phase_seconds_with_generation(phase_seconds: Dict[str, float]) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    for key, value in phase_seconds.items():
-        try:
-            out[str(key)] = round(float(value), 3)
-        except (TypeError, ValueError):
-            out[str(key)] = 0.0
-    generation_components = (
-        out.get("pre_summary", 0.0),
-        out.get("chunk_generation", 0.0),
-        out.get("continuations", 0.0),
-        out.get("truncation_recovery", 0.0),
-        out.get("postprocess", 0.0),
-    )
-    out["generation"] = round(sum(generation_components), 3)
-    return out
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(value):
-        return default
-    return value
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def _sum_int_maps(*maps: Dict[str, int]) -> Dict[str, int]:
-    out: Dict[str, int] = {}
-    for payload in maps:
-        for key, value in dict(payload or {}).items():
-            try:
-                out[str(key)] = int(out.get(str(key), 0)) + int(value)
-            except (TypeError, ValueError):
-                continue
-    return out
-
-
-def _default_completeness_report(*, reason: str = "") -> Dict[str, object]:
-    reasons: List[str] = []
-    if reason:
-        reasons.append(str(reason))
-    return {
-        "pass": True,
-        "reasons": reasons,
-        "truncation_indices": [],
-        "block_sequence": [],
-    }
-
-
-def _recent_dialogue(lines: List[Dict[str, str]], max_lines: int) -> str:
-    tail = context_tail(lines, max_lines)
-    rows: List[str] = []
-    for line in tail:
-        rows.append(f"{line['speaker']} ({line['role']}): {line['text']}")
-    return "\n".join(rows).strip()
-
-
-def _migrate_checkpoint_lines(raw_lines: Any) -> List[Dict[str, str]]:
-    if not isinstance(raw_lines, list):
-        return []
-    migrated: List[Dict[str, str]] = []
-    for idx, item in enumerate(raw_lines):
-        if not isinstance(item, dict):
-            continue
-        speaker = str(item.get("speaker") or item.get("name") or "").strip()
-        text = str(
-            item.get("text")
-            or item.get("line")
-            or item.get("content")
-            or item.get("dialogue")
-            or ""
-        ).strip()
-        if not speaker or not text:
-            continue
-        role = str(item.get("role") or "").strip() or ("Host1" if idx % 2 == 0 else "Host2")
-        instructions = str(item.get("instructions") or "").strip()
-        migrated.append(
-            {
-                "speaker": speaker,
-                "role": role,
-                "instructions": instructions,
-                "text": text,
-            }
-        )
-    return migrated
 
 
 SOURCE_AUTHOR_LINE_RE = re.compile(

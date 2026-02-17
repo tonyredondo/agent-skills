@@ -26,6 +26,7 @@ from pipeline.errors import (
     TTSOperationError,
     is_stuck_error_kind,
 )
+from pipeline.gate_action import resolve_script_gate_action
 from pipeline.housekeeping import cleanup_dir, ensure_min_free_disk
 from pipeline.logging_utils import Logger
 from pipeline.openai_client import OpenAIClient
@@ -172,33 +173,6 @@ def _classify_audio_failure_kind(exc: BaseException) -> str:
     return ERROR_KIND_UNKNOWN
 
 
-def _default_script_gate_action(*, script_profile_name: str) -> str:
-    gate_profile = str(os.environ.get("SCRIPT_QUALITY_GATE_PROFILE", "") or "").strip().lower()
-    if gate_profile == "production_strict":
-        return "enforce"
-    profile = str(script_profile_name or "standard").strip().lower()
-    if profile in {"standard", "long"}:
-        return "enforce"
-    return "warn"
-
-
-def _resolve_script_gate_action(*, script_profile_name: str, fallback_action: str) -> str:
-    default_action = _default_script_gate_action(script_profile_name=script_profile_name)
-    explicit_script_action = str(os.environ.get("SCRIPT_QUALITY_GATE_SCRIPT_ACTION", "") or "").strip().lower()
-    if explicit_script_action in {"off", "warn", "enforce"}:
-        return explicit_script_action
-    raw_global_action = os.environ.get("SCRIPT_QUALITY_GATE_ACTION")
-    if raw_global_action is not None:
-        global_action = str(raw_global_action or "").strip().lower()
-        if global_action in {"off", "warn", "enforce"}:
-            return global_action
-        return default_action
-    fallback = str(fallback_action or "").strip().lower()
-    if fallback in {"off", "warn", "enforce"} and fallback != "enforce":
-        return fallback
-    return default_action
-
-
 def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
     tmp = f"{output_path}.tmp"
     try:
@@ -262,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     quality_cfg = ScriptQualityGateConfig.from_env(profile_name=script_cfg.profile_name)
     quality_cfg = dataclasses.replace(
         quality_cfg,
-        action=_resolve_script_gate_action(
+        action=resolve_script_gate_action(
             script_profile_name=script_cfg.profile_name,
             fallback_action=quality_cfg.action,
         ),

@@ -228,6 +228,13 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertNotIn("...", out[-1]["text"])
         self.assertFalse(out[-1]["text"].lower().endswith(" y."))
 
+    def test_detect_truncation_indices_ignores_plain_tail_without_abrupt_markers(self) -> None:
+        lines = [
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Contexto inicial con datos utiles."},
+            {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Hola mundo"},
+        ]
+        self.assertEqual(detect_truncation_indices(lines), [])
+
     def test_harden_script_structure_applies_both_normalizers(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Bloque 1 con objetivos y contexto."},
@@ -304,13 +311,13 @@ class ScriptPostprocessTests(unittest.TestCase):
         indices = detect_truncation_indices(lines)
         self.assertEqual(indices, [0])
 
-    def test_detect_truncation_indices_flags_final_line_without_terminal_punctuation(self) -> None:
+    def test_detect_truncation_indices_allows_clean_tail_without_terminal_punctuation(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Contexto completo y recomendaciones concretas."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Cierre parcial con despedida natural pero incompleta"},
         ]
         indices = detect_truncation_indices(lines)
-        self.assertEqual(indices, [1])
+        self.assertEqual(indices, [])
 
     def test_detect_truncation_indices_ignores_mid_sentence_ellipsis(self) -> None:
         lines = [

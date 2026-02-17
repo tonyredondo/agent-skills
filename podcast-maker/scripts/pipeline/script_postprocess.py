@@ -513,9 +513,6 @@ def detect_truncation_indices(lines: List[Dict[str, str]]) -> List[int]:
             continue
         if TAIL_TRUNCATION_RE.search(text):
             out.append(idx)
-            continue
-        if idx == (len(lines) - 1) and not _is_complete_sentence(text):
-            out.append(idx)
     return out
 
 
