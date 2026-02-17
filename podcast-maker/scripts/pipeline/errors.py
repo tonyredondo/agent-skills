@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Shared error taxonomy and classifiers for pipeline retries/reporting."""
+
 import re
 import socket
 import urllib.error
@@ -27,22 +29,29 @@ STUCK_ERROR_KINDS = {
 
 
 def is_stuck_error_kind(kind: str) -> bool:
+    """Return True for failure kinds treated as stuck/timeout conditions."""
     return str(kind or "").strip().lower() in STUCK_ERROR_KINDS
 
 
 class TTSOperationError(RuntimeError):
+    """Typed TTS operation error carrying normalized failure kind."""
+
     def __init__(self, message: str, *, error_kind: str) -> None:
         super().__init__(message)
         self.error_kind = str(error_kind or ERROR_KIND_UNKNOWN).strip().lower()
 
 
 class ScriptOperationError(RuntimeError):
+    """Typed script operation error carrying normalized failure kind."""
+
     def __init__(self, message: str, *, error_kind: str) -> None:
         super().__init__(message)
         self.error_kind = str(error_kind or ERROR_KIND_UNKNOWN).strip().lower()
 
 
 class TTSBatchError(RuntimeError):
+    """Aggregated TTS failure for multi-segment synthesis batches."""
+
     def __init__(
         self,
         *,
@@ -72,6 +81,7 @@ class TTSBatchError(RuntimeError):
 
 
 def _iter_exception_chain(exc: BaseException) -> Iterable[BaseException]:
+    """Yield exception + cause/context chain without loops."""
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -82,6 +92,7 @@ def _iter_exception_chain(exc: BaseException) -> Iterable[BaseException]:
 
 
 def classify_tts_exception(exc: BaseException) -> str:
+    """Classify generic exceptions into normalized TTS failure kinds."""
     messages: List[str] = []
     for item in _iter_exception_chain(exc):
         if isinstance(item, TTSOperationError):
@@ -128,6 +139,7 @@ def classify_tts_exception(exc: BaseException) -> str:
 
 
 def summarize_failure_kinds(kinds: Iterable[str]) -> List[str]:
+    """Return deduplicated, normalized failure kinds preserving order."""
     out: List[str] = []
     for kind in kinds:
         normalized = str(kind or ERROR_KIND_UNKNOWN).strip().lower()

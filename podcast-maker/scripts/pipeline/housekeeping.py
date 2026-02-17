@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Disk-space checks and retention cleanup for checkpoint/log artifacts."""
+
 import json
 import os
 import shutil
@@ -13,12 +15,15 @@ from .logging_utils import Logger
 
 @dataclass
 class CleanupReport:
+    """Summary stats returned by cleanup operations."""
+
     deleted_files: int
     deleted_bytes: int
     kept_files: int
 
 
 def ensure_min_free_disk(path: str, min_free_mb: int) -> None:
+    """Raise when free disk space is below required threshold."""
     usage = shutil.disk_usage(path)
     free_mb = usage.free // (1024 * 1024)
     if free_mb < min_free_mb:
@@ -28,6 +33,7 @@ def ensure_min_free_disk(path: str, min_free_mb: int) -> None:
 
 
 def _iter_files(base_dir: str) -> Iterable[str]:
+    """Yield files recursively under base dir."""
     if not os.path.exists(base_dir):
         return
     for root, _, files in os.walk(base_dir):
@@ -36,6 +42,7 @@ def _iter_files(base_dir: str) -> Iterable[str]:
 
 
 def _safe_mtime(path: str) -> float:
+    """Return file mtime or inf when unavailable."""
     try:
         return float(os.path.getmtime(path))
     except OSError:
@@ -44,6 +51,7 @@ def _safe_mtime(path: str) -> float:
 
 
 def _is_under(path: str, root: str) -> bool:
+    """Return True when path is located under root directory."""
     try:
         common = os.path.commonpath([os.path.abspath(path), os.path.abspath(root)])
     except ValueError:
@@ -52,6 +60,7 @@ def _is_under(path: str, root: str) -> bool:
 
 
 def _detect_failed_recent_roots(base_dir: str, *, recent_seconds: int) -> List[str]:
+    """Detect recent failed run roots that should be protected from cleanup."""
     now = time.time()
     protected: List[str] = []
     for root, _, files in os.walk(base_dir):
@@ -73,6 +82,7 @@ def _detect_failed_recent_roots(base_dir: str, *, recent_seconds: int) -> List[s
 
 
 def _file_category(path: str) -> str:
+    """Classify file into cleanup category."""
     lower = path.lower()
     if lower.endswith(".log"):
         return "log"
@@ -94,6 +104,7 @@ def cleanup_dir(
     logger: Logger,
     dry_run: bool = False,
 ) -> CleanupReport:
+    """Cleanup directory by retention age and storage budget caps."""
     if not os.path.exists(base_dir):
         return CleanupReport(deleted_files=0, deleted_bytes=0, kept_files=0)
 
@@ -146,6 +157,7 @@ def cleanup_dir(
     files_after = sorted(_iter_files(base_dir), key=_safe_mtime)
 
     def _trim_group(group_files: List[str], cap_mb: int, tag: str) -> None:
+        """Trim oldest files in one category until cap is met."""
         nonlocal deleted_files, deleted_bytes
         cap_bytes = cap_mb * 1024 * 1024
         if cap_bytes <= 0:

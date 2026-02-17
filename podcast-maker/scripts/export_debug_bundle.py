@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Build portable debug bundles for script/audio incident triage."""
+
 import argparse
 import json
 import os
@@ -56,6 +58,7 @@ SAFE_ENV_PREFIXES = (
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
+    """Parse CLI options for debug bundle export."""
     parser = argparse.ArgumentParser(description="Create a debug bundle ZIP for podcast runs.")
     parser.add_argument("episode_id", help="Episode id used by checkpoint directories")
     parser.add_argument(
@@ -81,6 +84,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
 
 
 def _safe_env_snapshot() -> Dict[str, str]:
+    """Capture a sanitized environment snapshot excluding sensitive keys."""
     out: Dict[str, str] = {}
     for key in sorted(os.environ.keys()):
         upper = key.upper()
@@ -92,6 +96,7 @@ def _safe_env_snapshot() -> Dict[str, str]:
 
 
 def _archive_name(path: str) -> str:
+    """Map absolute path to stable archive-relative name."""
     abs_path = os.path.abspath(path)
     cwd = os.path.abspath(os.getcwd())
     if abs_path == cwd:
@@ -105,6 +110,7 @@ def _archive_name(path: str) -> str:
 
 
 def _read_json_dict(path: str) -> Dict[str, object] | None:
+    """Load JSON dict payload from disk when valid."""
     if not os.path.exists(path):
         return None
     try:
@@ -118,6 +124,7 @@ def _read_json_dict(path: str) -> Dict[str, object] | None:
 
 
 def _report_entry(*, status: str, path: str, reason: str = "", category: str = "") -> Dict[str, str]:
+    """Build one path status entry for bundle report."""
     return {
         "status": str(status),
         "path": os.path.abspath(path) if str(path).strip() else "",
@@ -128,6 +135,7 @@ def _report_entry(*, status: str, path: str, reason: str = "", category: str = "
 
 
 def _virtual_found_entry(*, archive_name: str, reason: str, category: str) -> Dict[str, str]:
+    """Build status entry for virtual/generated bundle artifacts."""
     return {
         "status": "found",
         "path": "",
@@ -138,6 +146,7 @@ def _virtual_found_entry(*, archive_name: str, reason: str, category: str) -> Di
 
 
 def _resolve_manifest_pointer_path(*, raw_path: str, run_dir: str, checkpoint_dir: str) -> str:
+    """Resolve manifest-relative pointer path to concrete absolute path."""
     candidate = str(raw_path or "").strip()
     if not candidate:
         return ""
@@ -162,6 +171,7 @@ def _discover_checkpoint_root(
     prefer_manifest: bool,
     episode_aliases: List[str] | None = None,
 ) -> tuple[str, Dict[str, object]]:
+    """Discover most likely checkpoint root for an episode id."""
     base = os.path.abspath(str(base_dir or "."))
     episode = str(episode_id or "").strip()
     aliases: List[str] = []
@@ -219,6 +229,7 @@ def _discover_checkpoint_root(
 
 
 def _read_git_commit() -> str:
+    """Resolve current git commit hash without invoking git CLI."""
     root = os.path.abspath(os.getcwd())
     current = root
     while True:
@@ -272,6 +283,7 @@ def _read_git_commit() -> str:
 
 
 def _skill_version() -> str:
+    """Resolve skill version marker from environment."""
     version = str(os.environ.get("PODCAST_MAKER_VERSION", "")).strip()
     if version:
         return version
@@ -288,6 +300,7 @@ def _append_path_status(
     missing_reason: str = "",
     not_applicable_reason: str = "",
 ) -> None:
+    """Append path status and include existing paths in archive request list."""
     candidate = str(path or "").strip()
     if not candidate:
         return
@@ -343,6 +356,7 @@ def _build_consistency_warnings(
     manifest_payload: Dict[str, object] | None,
     include_paths: List[str],
 ) -> List[str]:
+    """Generate cross-artifact consistency warnings for troubleshooting."""
     warnings: List[str] = []
     expected = str(expected_episode_id or "").strip()
     if isinstance(manifest_payload, dict):
@@ -369,6 +383,7 @@ def _build_consistency_warnings(
 def _collect_paths(
     args: argparse.Namespace,
 ) -> Tuple[List[str], List[str], List[Dict[str, str]], List[str], str, Dict[str, object]]:
+    """Collect files and metadata candidates for bundle export."""
     episode = str(args.episode_id).strip()
     script_ckpt_input = os.path.abspath(str(args.script_checkpoint_dir))
     audio_ckpt_input = os.path.abspath(str(args.audio_checkpoint_dir))
@@ -839,6 +854,7 @@ def _collect_paths(
 
 
 def create_debug_bundle(args: argparse.Namespace) -> str:
+    """Create debug bundle ZIP and return output file path."""
     now = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     output_path = str(args.output or "").strip()
     if not output_path:
@@ -862,6 +878,8 @@ def create_debug_bundle(args: argparse.Namespace) -> str:
         for item in collection_report
     )
     if should_reconstruct_script:
+        # If script output is missing but checkpoint lines exist, include a
+        # reconstructed script artifact to improve replay/debug workflows.
         checkpoint_candidates = [
             str(item.get("path", "")).strip()
             for item in collection_report
@@ -943,6 +961,7 @@ def create_debug_bundle(args: argparse.Namespace) -> str:
 
 
 def main(argv: List[str] | None = None) -> int:
+    """CLI entrypoint for debug bundle creation."""
     args = parse_args(argv)
     out = create_debug_bundle(args)
     print(out)

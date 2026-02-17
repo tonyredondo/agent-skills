@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Source-text chunking utilities for script generation."""
+
 import math
 import re
 from typing import Dict, List
 
 
 def _split_very_long_sentence(sentence: str, target_words: int) -> List[str]:
+    """Split extremely long sentence by word windows."""
     words = sentence.split()
     if not words:
         return []
@@ -20,6 +23,7 @@ def _split_very_long_sentence(sentence: str, target_words: int) -> List[str]:
 
 
 def _split_paragraph_safely(paragraph: str, target_words_per_chunk: int) -> List[str]:
+    """Split paragraph into near-target sentence bundles."""
     words_total = len(paragraph.split())
     if words_total <= target_words_per_chunk:
         return [paragraph.strip()]
@@ -61,6 +65,7 @@ def split_source_chunks(
     chunk_target_minutes: float,
     words_per_min: float,
 ) -> List[str]:
+    """Split source into balanced chunks for staged generation."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", source) if p.strip()]
     if not paragraphs:
         return []
@@ -116,10 +121,12 @@ def split_source_chunks(
 
 
 def target_chunk_count(target_minutes: float, chunk_target_minutes: float) -> int:
+    """Compute target number of chunks from duration settings."""
     return max(1, int(math.ceil(max(1.0, target_minutes) / max(0.8, chunk_target_minutes))))
 
 
 def context_tail(lines: List[Dict[str, str]], max_lines: int) -> List[Dict[str, str]]:
+    """Return the last `max_lines` dialogue entries."""
     if max_lines <= 0:
         return []
     return lines[-max_lines:]

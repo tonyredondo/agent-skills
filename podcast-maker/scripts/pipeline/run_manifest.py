@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Run manifest helpers for cross-stage handoff and observability.
+
+The manifest tracks script/audio stage status and feeds a lightweight pipeline
+summary used by tooling and incident triage.
+"""
+
 import json
 import os
 import time
@@ -12,6 +18,7 @@ PIPELINE_SUMMARY_FILENAME = "pipeline_summary.json"
 
 
 def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
+    """Write manifest/summary JSON atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -21,6 +28,7 @@ def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
 
 
 def resolve_episode_id(*, output_path: str, override: str | None = None) -> str:
+    """Resolve stable episode id from override or output filename."""
     candidate = str(override or "").strip()
     if candidate:
         if os.path.basename(candidate) != candidate:
@@ -30,14 +38,17 @@ def resolve_episode_id(*, output_path: str, override: str | None = None) -> str:
 
 
 def run_manifest_path(*, checkpoint_dir: str, episode_id: str) -> str:
+    """Return manifest path for an episode."""
     return os.path.join(checkpoint_dir, episode_id, RUN_MANIFEST_FILENAME)
 
 
 def pipeline_summary_path(*, checkpoint_dir: str, episode_id: str) -> str:
+    """Return pipeline summary path for an episode."""
     return os.path.join(checkpoint_dir, episode_id, PIPELINE_SUMMARY_FILENAME)
 
 
 def load_manifest(path: str) -> Dict[str, Any] | None:
+    """Load manifest from disk when valid dict payload exists."""
     if not os.path.exists(path):
         return None
     try:
@@ -51,6 +62,7 @@ def load_manifest(path: str) -> Dict[str, Any] | None:
 
 
 def normalize_path_for_compare(path: str) -> str:
+    """Normalize path for robust equality checks."""
     value = str(path or "").strip()
     if not value:
         return ""
@@ -58,6 +70,7 @@ def normalize_path_for_compare(path: str) -> str:
 
 
 def manifest_script_path_matches(*, manifest: Dict[str, Any] | None, script_path: str) -> bool:
+    """Check whether provided script path matches manifest script pointer."""
     if not isinstance(manifest, dict):
         return True
     manifest_script_path = normalize_path_for_compare(str(manifest.get("script_output_path", "")))
@@ -75,6 +88,7 @@ def init_manifest(
     script_checkpoint_dir: str,
     audio_checkpoint_dir: str,
 ) -> Dict[str, Any]:
+    """Create initial v2 manifest and matching pipeline summary."""
     now = int(time.time())
     manifest = {
         "manifest_version": 2,
@@ -121,6 +135,7 @@ def update_manifest(
     episode_id: str,
     updates: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """Merge partial updates into manifest and refresh pipeline summary."""
     path = run_manifest_path(checkpoint_dir=checkpoint_dir, episode_id=episode_id)
     current = load_manifest(path) or {}
     merged = dict(current)
@@ -145,6 +160,7 @@ def _write_pipeline_summary(
     episode_id: str,
     manifest: Dict[str, Any],
 ) -> None:
+    """Derive compact pipeline status summary from full manifest."""
     status_by_stage = manifest.get("status_by_stage", {}) if isinstance(manifest, dict) else {}
     script_status = ""
     audio_status = ""

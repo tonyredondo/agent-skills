@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""CLI wrapper for golden-suite structural regression gate."""
+
 import argparse
 import json
 import os
@@ -10,10 +12,12 @@ from pipeline.golden_gate import evaluate_golden_suite
 
 
 def _repo_root() -> str:
+    """Return repository root path relative to this script."""
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 
 def _print_summary(*, report: dict, candidate_dir: str) -> None:
+    """Emit compact JSON summary to stdout for CI consumption."""
     print(
         json.dumps(
             {
@@ -31,6 +35,7 @@ def _print_summary(*, report: dict, candidate_dir: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI args for golden suite checker."""
     repo_dir = _repo_root()
     parser = argparse.ArgumentParser(description="Run golden regression gate for podcast maker")
     parser.add_argument(
@@ -62,6 +67,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Evaluate golden suite and return process exit code."""
     args = parse_args()
     candidate_dir = os.path.abspath(args.candidate_dir)
     fixtures_dir = os.path.abspath(args.fixtures_dir)

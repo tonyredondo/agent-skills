@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Golden-regression metric extraction/comparison helpers."""
+
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -10,6 +12,7 @@ from .schema import count_words_from_lines, validate_script_payload
 
 
 def _normalized_text(value: str) -> str:
+    """Normalize text for metric token matching."""
     lowered = str(value or "").strip().lower()
     deaccented = "".join(
         ch for ch in unicodedata.normalize("NFKD", lowered) if not unicodedata.combining(ch)
@@ -53,6 +56,8 @@ FAREWELL_TOKENS = (
 
 @dataclass(frozen=True)
 class ScriptMetrics:
+    """Compact script metrics used by golden suite comparisons."""
+
     line_count: int
     word_count: int
     unique_speakers: int
@@ -60,6 +65,7 @@ class ScriptMetrics:
     farewell_in_last_3: bool
 
     def to_dict(self) -> Dict[str, Any]:
+        """Convert dataclass metrics into plain dict."""
         return {
             "line_count": self.line_count,
             "word_count": self.word_count,
@@ -70,6 +76,7 @@ class ScriptMetrics:
 
 
 def compute_script_metrics(payload: Dict[str, Any]) -> ScriptMetrics:
+    """Compute deterministic script metrics from validated payload."""
     validated = validate_script_payload(payload)
     lines = validated["lines"]
     speakers = {line["speaker"] for line in lines if line.get("speaker")}
@@ -95,6 +102,7 @@ def compute_script_metrics(payload: Dict[str, Any]) -> ScriptMetrics:
 
 
 def compare_metric_ratio(current: int, baseline: int) -> float:
+    """Return ratio between current and baseline values."""
     if baseline <= 0:
         return 1.0
     return float(current) / float(baseline)
@@ -109,6 +117,7 @@ def compare_against_baseline(
     min_line_ratio: float = 0.7,
     max_line_ratio: float = 1.6,
 ) -> Dict[str, Any]:
+    """Compare current metrics against baseline ratio thresholds."""
     word_ratio = compare_metric_ratio(current.word_count, baseline.word_count)
     line_ratio = compare_metric_ratio(current.line_count, baseline.line_count)
     return {

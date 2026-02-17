@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Audio checkpoint persistence with lock ownership and resume validation."""
+
 import json
 import os
 import re
@@ -14,6 +16,7 @@ from .config import ReliabilityConfig
 
 
 def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
+    """Write JSON atomically to avoid partial manifest files."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -23,6 +26,7 @@ def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
 
 
 def _atomic_create_json(path: str, payload: Dict[str, Any]) -> None:
+    """Create JSON atomically and fail when path already exists."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     fd = os.open(path, flags, 0o644)
@@ -32,6 +36,7 @@ def _atomic_create_json(path: str, payload: Dict[str, Any]) -> None:
 
 
 def _parse_version(value: Any) -> Tuple[int, int]:
+    """Parse `major.minor` version values into integer tuple."""
     if isinstance(value, int):
         return value, 0
     if isinstance(value, str):
@@ -43,6 +48,8 @@ def _parse_version(value: Any) -> Tuple[int, int]:
 
 @dataclass
 class AudioCheckpointStore:
+    """Owns audio manifest files, lock lifecycle, and resume checks."""
+
     base_dir: str
     episode_id: str
     reliability: ReliabilityConfig
@@ -53,6 +60,7 @@ class AudioCheckpointStore:
     _lock_heartbeat_thread: Optional[threading.Thread] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Initialize run-scoped directories and file paths."""
         os.makedirs(self.base_dir, exist_ok=True)
         self.run_dir = os.path.join(self.base_dir, self.episode_id)
         os.makedirs(self.run_dir, exist_ok=True)
@@ -63,9 +71,11 @@ class AudioCheckpointStore:
         os.makedirs(self.segments_dir, exist_ok=True)
 
     def _heartbeat_interval_seconds(self) -> float:
+        """Return lock heartbeat interval derived from lock TTL."""
         return float(max(1, min(30, int(self.reliability.lock_ttl_seconds / 3))))
 
     def _stop_lock_heartbeat(self) -> None:
+        """Stop and join lock heartbeat thread if running."""
         stop = self._lock_heartbeat_stop
         thread = self._lock_heartbeat_thread
         self._lock_heartbeat_stop = None
@@ -76,6 +86,7 @@ class AudioCheckpointStore:
             thread.join(timeout=1.0)
 
     def _refresh_lock_timestamp(self) -> None:
+        """Refresh lock mtime when current token still owns lock."""
         token = self._lock_token
         if not token:
             return
@@ -93,10 +104,12 @@ class AudioCheckpointStore:
             return
 
     def _lock_heartbeat_loop(self, stop: threading.Event, interval_s: float) -> None:
+        """Periodic lock timestamp refresher loop."""
         while not stop.wait(interval_s):
             self._refresh_lock_timestamp()
 
     def _start_lock_heartbeat(self) -> None:
+        """Start daemon thread that refreshes lock timestamp."""
         self._stop_lock_heartbeat()
         stop = threading.Event()
         thread = threading.Thread(
@@ -110,6 +123,7 @@ class AudioCheckpointStore:
         thread.start()
 
     def acquire_lock(self, force_unlock: bool = False) -> None:
+        """Acquire exclusive audio checkpoint lock, honoring TTL rules."""
         self._stop_lock_heartbeat()
         self._lock_token = None
         while True:
@@ -122,6 +136,8 @@ class AudioCheckpointStore:
                 self._start_lock_heartbeat()
                 return
             except FileExistsError:
+                # Lock already exists: inspect metadata and reclaim only if
+                # forced or stale by TTL.
                 try:
                     with open(self.lock_path, "r", encoding="utf-8") as f:
                         lock_data = json.load(f)
@@ -166,6 +182,7 @@ class AudioCheckpointStore:
                     lock_mtime = ts
                 age = now - max(ts, lock_mtime)
                 if force_unlock or age > self.reliability.lock_ttl_seconds:
+                    # Reclaim stale lock and retry atomic creation.
                     try:
                         os.remove(self.lock_path)
                     except OSError:
@@ -175,6 +192,7 @@ class AudioCheckpointStore:
                 raise RuntimeError(f"Audio checkpoint lock active (pid={owner}, age={age}s)")
 
     def release_lock(self) -> None:
+        """Release lock only if token matches current owner."""
         token = self._lock_token
         self._lock_token = None
         self._stop_lock_heartbeat()
@@ -193,6 +211,7 @@ class AudioCheckpointStore:
             pass
 
     def load(self) -> Optional[Dict[str, Any]]:
+        """Load audio manifest; quarantine corrupt payloads when unreadable."""
         self.last_corrupt_backup_path = None
         self.last_corrupt_error = ""
         if not os.path.exists(self.manifest_path):
@@ -212,6 +231,7 @@ class AudioCheckpointStore:
             return None
 
     def save(self, manifest: Dict[str, Any]) -> None:
+        """Persist current audio manifest payload."""
         _atomic_write_json(self.manifest_path, manifest)
 
     def init_manifest(
@@ -221,6 +241,7 @@ class AudioCheckpointStore:
         script_hash: str,
         segments: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        """Create initial manifest for a new TTS synthesis run."""
         return {
             "checkpoint_version": self.reliability.checkpoint_version,
             "episode_id": self.episode_id,
@@ -240,6 +261,7 @@ class AudioCheckpointStore:
         script_hash: str,
         resume_force: bool,
     ) -> bool:
+        """Validate manifest compatibility for resume behavior."""
         if not manifest or not isinstance(manifest, dict):
             raise RuntimeError("Invalid audio manifest state for resume")
         current_version = self.reliability.checkpoint_version
