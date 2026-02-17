@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 
@@ -11,14 +12,17 @@ from pipeline.script_postprocess import (  # noqa: E402
     dedupe_append,
     detect_truncation_indices,
     evaluate_script_completeness,
-    ensure_en_resumen,
-    ensure_farewell_last,
+    ensure_farewell_close,
+    ensure_recap_near_end,
+    ensure_tail_questions_answered,
     fix_mid_farewells,
     harden_script_structure,
     normalize_block_numbering,
     normalize_speaker_turns,
     repair_script_completeness,
     sanitize_abrupt_tail,
+    sanitize_declared_tease_intent,
+    sanitize_meta_podcast_language,
 )
 
 
@@ -53,20 +57,20 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertNotIn("Sigamos con el siguiente punto", out[0]["text"])
         self.assertIn("continue with the next point", out[0]["text"].lower())
 
-    def test_ensure_summary_added(self) -> None:
+    def test_ensure_recap_added(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Punto clave uno."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Punto clave dos."},
         ]
-        out = ensure_en_resumen(lines)
-        self.assertTrue(any("en resumen" in l["text"].lower() for l in out))
+        out = ensure_recap_near_end(lines)
+        self.assertTrue(any("nos quedamos con" in (l["text"] or "").lower() for l in out))
 
     def test_ensure_summary_does_not_duplicate_when_other_language_marker_exists(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Core context for decisions."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "In summary, rollout should be gradual and measurable."},
         ]
-        out = ensure_en_resumen(lines)
+        out = ensure_recap_near_end(lines)
         self.assertEqual(len(out), len(lines))
 
     def test_ensure_summary_existing_marker_returns_detached_list(self) -> None:
@@ -74,7 +78,7 @@ class ScriptPostprocessTests(unittest.TestCase):
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Core context for decisions."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "In summary, rollout should be gradual and measurable."},
         ]
-        out = ensure_en_resumen(lines)
+        out = ensure_recap_near_end(lines)
         self.assertIsNot(out, lines)
         out[0]["text"] = "mutated copy"
         self.assertEqual(lines[0]["text"], "Core context for decisions.")
@@ -84,8 +88,9 @@ class ScriptPostprocessTests(unittest.TestCase):
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Core context for decisions and tradeoffs."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "We connect latency, cost and reliability implications."},
         ]
-        out = ensure_en_resumen(lines)
-        self.assertIn("In summary", out[-1]["text"])
+        out = ensure_recap_near_end(lines)
+        tail = out[-1]["text"].lower()
+        self.assertTrue("practical takeaways" in tail or "practical ideas" in tail)
 
     def test_dedupe_append(self) -> None:
         base = [{"speaker": "A", "role": "Host1", "instructions": "x", "text": "Hola"}]
@@ -123,19 +128,19 @@ class ScriptPostprocessTests(unittest.TestCase):
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": None},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Tema principal."},
         ]
-        out = ensure_en_resumen(lines)
-        out = ensure_farewell_last(out)
-        self.assertTrue(any("en resumen" in (line.get("text") or "").lower() for line in out))
+        out = ensure_recap_near_end(lines)
+        out = ensure_farewell_close(out)
+        self.assertTrue(any("nos quedamos con" in (line.get("text") or "").lower() for line in out))
 
-    def test_ensure_farewell_last_uses_english_template_when_detected(self) -> None:
+    def test_ensure_farewell_close_uses_english_template_when_detected(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Today we reviewed practical architecture decisions."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "We closed with rollout and observability guidance."},
         ]
-        out = ensure_farewell_last(lines)
+        out = ensure_farewell_close(lines)
         self.assertIn("Thank you for listening", out[-1]["text"])
 
-    def test_ensure_summary_adds_near_end_when_only_early_marker_exists(self) -> None:
+    def test_ensure_recap_adds_near_end_when_only_early_marker_exists(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "En resumen, abrimos con contexto general."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Ahora pasamos a detalles operativos por fase."},
@@ -145,34 +150,95 @@ class ScriptPostprocessTests(unittest.TestCase):
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Ajustamos segun retrabajo y calidad percibida."},
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Ultimo bloque con recomendaciones de adopcion."},
         ]
-        out = ensure_en_resumen(lines)
-        self.assertTrue(any("en resumen" in (line.get("text") or "").lower() for line in out[-3:]))
+        out = ensure_recap_near_end(lines)
+        self.assertTrue(any("nos quedamos con" in (line.get("text") or "").lower() for line in out[-3:]))
         self.assertGreaterEqual(len(out), len(lines) + 1)
 
-    def test_ensure_farewell_last_repairs_truncated_farewell_tail(self) -> None:
+    def test_ensure_recap_adds_when_only_generic_resumen_word_exists(self) -> None:
+        lines = [
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Abrimos con una ruta de trabajo concreta."},
+            {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Cierre con resumen operativo por bloques y responsables."},
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Seguimos con validacion semanal y riesgos principales."},
+        ]
+        out = ensure_recap_near_end(lines)
+        self.assertGreaterEqual(len(out), len(lines) + 1)
+        self.assertTrue(any("nos quedamos con" in (line.get("text") or "").lower() for line in out[-3:]))
+
+    def test_ensure_recap_uses_recent_context_fragments(self) -> None:
+        lines = [
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Abrimos priorizando cobertura de senales y latencia."},
+            {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Despues comparamos coste operativo y capacidad de despliegue."},
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Cerramos validando alarmas tempranas en produccion semanal."},
+        ]
+        out = ensure_recap_near_end(lines)
+        recap_text = str(out[-1].get("text") or "").lower()
+        self.assertIn("nos quedamos con", recap_text)
+        self.assertTrue("latencia" in recap_text or "alarmas tempranas" in recap_text)
+
+    def test_ensure_farewell_close_repairs_truncated_farewell_tail(self) -> None:
         lines = [
             {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "En resumen, repasamos los puntos principales."},
             {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Gracias por escucharnos, soy Lucia y nos vemos en la pro"},
         ]
-        out = ensure_farewell_last(lines)
+        out = ensure_farewell_close(lines)
         self.assertIn("gracias por escuch", out[-1]["text"].lower())
         self.assertTrue(out[-1]["text"].strip().endswith("."))
 
-    def test_ensure_summary_non_latin_defaults_to_english_template(self) -> None:
+    def test_ensure_recap_non_latin_defaults_to_english_template(self) -> None:
         lines = [
             {"speaker": "Aoi", "role": "Host1", "instructions": "x", "text": "これは番組の主要なポイントです。"},
             {"speaker": "Kenji", "role": "Host2", "instructions": "x", "text": "次に実装時の注意点を確認します。"},
         ]
-        out = ensure_en_resumen(lines)
-        self.assertIn("In summary", out[-1]["text"])
+        out = ensure_recap_near_end(lines)
+        self.assertIn("practical ideas", out[-1]["text"].lower())
 
-    def test_ensure_farewell_non_latin_defaults_to_english_template(self) -> None:
+    def test_ensure_farewell_close_non_latin_defaults_to_english_template(self) -> None:
         lines = [
             {"speaker": "Aoi", "role": "Host1", "instructions": "x", "text": "これは番組の要点です。"},
             {"speaker": "Kenji", "role": "Host2", "instructions": "x", "text": "次に運用上の注意点を整理します。"},
         ]
-        out = ensure_farewell_last(lines)
+        out = ensure_farewell_close(lines)
         self.assertIn("Thank you for listening", out[-1]["text"])
+
+    def test_ensure_tail_questions_answered_inserts_counterpart_response(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Hoy revisamos decisiones tecnicas y riesgos de despliegue."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Entonces, te parece mejor priorizar fiabilidad o velocidad ahora?"},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "En resumen, conviene cerrar cada cambio con evidencia clara."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Gracias por escuchar, nos vemos en la proxima entrega."},
+        ]
+        out = ensure_tail_questions_answered(lines)
+        self.assertEqual(len(out), len(lines) + 1)
+        self.assertEqual(out[2]["role"], "Host1")
+        self.assertIn("buena pregunta", out[2]["text"].lower())
+        self.assertEqual(out[3]["text"], lines[2]["text"])
+
+    def test_ensure_tail_questions_answered_skips_when_question_already_answered(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Hoy revisamos decisiones tecnicas y riesgos de despliegue."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Entonces, te parece mejor priorizar fiabilidad o velocidad ahora?"},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Si, porque la fiabilidad evita retrabajo y mantiene consistencia de cierre."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "En resumen, priorizamos estabilidad con iteraciones medibles."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos, nos vemos en el proximo episodio."},
+        ]
+        out = ensure_tail_questions_answered(lines)
+        self.assertEqual(out, lines)
+
+    def test_sanitize_meta_podcast_language_rewrites_document_phrases(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Segun el indice, en el siguiente tramo veremos riesgos."},
+        ]
+        out = sanitize_meta_podcast_language(lines)
+        self.assertNotIn("indice", out[0]["text"].lower())
+        self.assertNotIn("siguiente tramo", out[0]["text"].lower())
+
+    def test_sanitize_declared_tease_intent_rewrites_forced_announcement(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Te voy a chinchar con una pregunta incomoda."},
+        ]
+        out = sanitize_declared_tease_intent(lines)
+        self.assertNotIn("te voy a chinchar", out[0]["text"].lower())
+        self.assertIn("objecion", out[0]["text"].lower())
 
     def test_normalize_block_numbering_fixes_monotonic_gaps(self) -> None:
         lines = [
@@ -275,6 +341,64 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertTrue(out[0]["text"].lower().startswith("y "))
         self.assertFalse(out[1]["text"].lower().startswith("y "))
         self.assertNotEqual(out[1]["text"], lines[1]["text"])
+
+    def test_harden_script_structure_smooths_abrupt_transition_with_connector(self) -> None:
+        lines = [
+            {
+                "speaker": "Laura",
+                "role": "Host1",
+                "instructions": "x",
+                "text": "Analizamos diamante, fotones y decoherencia de superficie para sensores cuanticos.",
+            },
+            {
+                "speaker": "Diego",
+                "role": "Host2",
+                "instructions": "x",
+                "text": "TripBench evalua planificadores con heuristicas largas y trayectorias multiagente.",
+            },
+            {
+                "speaker": "Laura",
+                "role": "Host1",
+                "instructions": "x",
+                "text": "Cerramos con una accion concreta para validar resultados en produccion.",
+            },
+        ]
+        out = harden_script_structure(lines)
+        connector_prefixes = (
+            "por otro lado,",
+            "ahora bien,",
+            "dicho esto,",
+            "en ese sentido,",
+            "en paralelo,",
+            "pasando a otro frente,",
+        )
+        self.assertTrue(any((line.get("text") or "").lower().startswith(connector_prefixes) for line in out[1:]))
+
+    def test_harden_script_structure_avoids_connector_followed_by_leading_y(self) -> None:
+        lines = [
+            {
+                "speaker": "Laura",
+                "role": "Host1",
+                "instructions": "x",
+                "text": "Analizamos biosensores de diamante, ruido de lectura y estabilidad de fotones.",
+            },
+            {
+                "speaker": "Diego",
+                "role": "Host2",
+                "instructions": "x",
+                "text": "Y revisamos planificadores multiagente con heuristicas largas, memoria y rutas colaborativas.",
+            },
+            {
+                "speaker": "Laura",
+                "role": "Host1",
+                "instructions": "x",
+                "text": "Cerramos con una accion concreta para validar despliegues semanales.",
+            },
+        ]
+        out = harden_script_structure(lines)
+        second = str(out[1].get("text") or "").lower()
+        self.assertRegex(second, r"^(?:por otro lado|ahora bien|dicho esto|en ese sentido|en paralelo|pasando a otro frente),")
+        self.assertIsNone(re.search(r",\s*y\b", second))
 
     def test_normalize_speaker_turns_limits_consecutive_run(self) -> None:
         lines = [

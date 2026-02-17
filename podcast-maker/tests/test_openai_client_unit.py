@@ -899,6 +899,30 @@ class OpenAIClientUnitTests(unittest.TestCase):
         )
         self.assertEqual(payload.get("reasoning", {}).get("effort"), "high")
 
+    def test_generate_freeform_text_uses_high_reasoning_for_quality_eval_stage(self) -> None:
+        self.client.script_reasoning_effort = "low"
+        with mock.patch.object(self.client, "_post_json", return_value={"output_text": "ok"}) as post_mock:
+            out = self.client.generate_freeform_text(
+                prompt="evaluate",
+                max_output_tokens=120,
+                stage="script_quality_eval",
+            )
+        self.assertEqual(out, "ok")
+        payload = dict(post_mock.call_args.kwargs.get("payload", {}))
+        self.assertEqual(payload.get("reasoning", {}).get("effort"), "high")
+
+    def test_generate_freeform_text_uses_default_reasoning_for_non_quality_stage(self) -> None:
+        self.client.script_reasoning_effort = "medium"
+        with mock.patch.object(self.client, "_post_json", return_value={"output_text": "ok"}) as post_mock:
+            out = self.client.generate_freeform_text(
+                prompt="helper",
+                max_output_tokens=120,
+                stage="script_quality_semantic_rules",
+            )
+        self.assertEqual(out, "ok")
+        payload = dict(post_mock.call_args.kwargs.get("payload", {}))
+        self.assertEqual(payload.get("reasoning", {}).get("effort"), "medium")
+
     def test_from_configs_invalid_circuit_breaker_env_falls_back_to_zero(self) -> None:
         logger = self.client.logger
         reliability = self.client.reliability

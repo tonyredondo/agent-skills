@@ -92,8 +92,14 @@ def evaluate_golden_suite(
             line_count=int(baseline_metrics.get("line_count", 1)),
             word_count=int(baseline_metrics.get("word_count", 1)),
             unique_speakers=int(baseline_metrics.get("unique_speakers", 1)),
-            has_en_resumen=bool(baseline_metrics.get("has_en_resumen", True)),
+            has_recap_signal=bool(
+                baseline_metrics.get(
+                    "has_recap_signal",
+                    baseline_metrics.get("has_en_resumen", True),
+                )
+            ),
             farewell_in_last_3=bool(baseline_metrics.get("farewell_in_last_3", True)),
+            meta_language_ok=bool(baseline_metrics.get("meta_language_ok", True)),
         )
         cmp = compare_against_baseline(
             current,
@@ -106,8 +112,9 @@ def evaluate_golden_suite(
         pass_case = bool(
             cmp.get("word_ratio_ok")
             and cmp.get("line_ratio_ok")
-            and cmp.get("summary_ok")
+            and cmp.get("recap_ok")
             and cmp.get("farewell_ok")
+            and cmp.get("meta_language_ok")
         )
         case_results.append(
             GoldenCaseResult(

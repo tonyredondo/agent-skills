@@ -76,9 +76,11 @@ When generating script content, enforce these rules from the first draft:
 - do not use explicit section labels in spoken text (for example `Bloque 1`, `Bloque 2`, `Section 3`, `Part 4`)
 - alternate turns strictly between `Host1` and `Host2` (no consecutive turns by the same role)
 - avoid internal workflow/tooling disclosures in spoken text (for example script paths, shell commands, `DailyRead` pipeline notes, `Tavily`, `Serper`)
+- avoid document-meta narration in spoken text (`segun el indice`, `en este resumen`, `siguiente tramo`, `ruta del episodio`, `tabla de contenidos`)
 - avoid repetitive line openers across consecutive turns (especially repeated `Y ...`)
 - prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example `donante adicional` vs `donor extra`)
-- the final chunk must contain a coherent recap + farewell (do not leave closing to chance)
+- the final chunk must contain a coherent recap + farewell (do not leave closing to chance), but recap should be natural (no rigid mandatory `En Resumen:` label)
+- respectful banter/challenge is allowed, but never pre-announce it with phrases such as `te voy a chinchar/pinchar/provocar`
 - avoid abrupt endings (`...`, dangling connectors such as trailing `y`, clipped phrases)
 - every line must end as a complete sentence
 - if source includes multiple topics or an explicit index/agenda, opening turns should include a brief spoken roadmap (for example `hoy hablaremos de...`) and then a smooth pivot to the first topic (`comenzamos con...`)
@@ -88,6 +90,15 @@ Examples:
 ./scripts/make_script.py --profile short input.txt short.json
 ./scripts/make_script.py --profile standard input.txt standard.json
 ./scripts/make_script.py --profile long input.txt long.json
+```
+
+Quality-loop comparison helper (baseline vs candidate runs):
+```
+python3 ./scripts/evaluate_script_quality_loop.py \
+  --source /path/to/source.txt \
+  --baseline-dir /tmp/podcast_eval/baseline \
+  --candidate-dir /tmp/podcast_eval/candidate \
+  --out /tmp/podcast_eval/before_vs_after.json
 ```
 
 You can still override words/minutes directly:
@@ -137,6 +148,7 @@ Useful env vars:
 - `LOG_DEBUG_EVENTS=1`
 - `SCRIPT_MODEL` / `MODEL` (default script model: `gpt-5.2`)
 - `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
+- `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, quality-eval stage override)
 - `SCRIPT_TONE_PROFILE=balanced|energetic|broadcast` (default `balanced`)
 - `SCRIPT_TRANSITION_STYLE=subtle|explicit` (default `subtle`)
 - `SCRIPT_PRECISION_PROFILE=strict|balanced` (default `strict`)
@@ -152,6 +164,7 @@ Useful env vars:
 - `SCRIPT_PRE_SUMMARY_MAX_ROUNDS`
 - `SCRIPT_PRESUMMARY_PARALLEL=0|1`, `SCRIPT_PRESUMMARY_PARALLEL_WORKERS`
 - `SCRIPT_MAX_CONTEXT_LINES`, `SCRIPT_NO_PROGRESS_ROUNDS`, `SCRIPT_MIN_WORD_DELTA`
+- `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` (default `0.75`; prevents premature max-word early-stop when multi-topic coverage is still narrow)
 - `SCRIPT_REPAIR_MAX_ATTEMPTS`
 - `SCRIPT_PARSE_REPAIR_ATTEMPTS` (base parse-repair attempts, default `2`)
 - `SCRIPT_PARSE_REPAIR_TRUNCATION_BONUS_ATTEMPTS` (extra attempts for likely truncation, default `2`)
@@ -183,10 +196,13 @@ Useful env vars:
 - `OPENAI_CIRCUIT_BREAKER_FAILURES`
 - `ESTIMATED_COST_PER_SCRIPT_REQUEST_USD`, `ESTIMATED_COST_PER_TTS_REQUEST_USD`
 - `SCRIPT_QUALITY_GATE_PROFILE=default|production_strict` (default `default`)
-- `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `enforce`)
-- `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (profile default: `short=warn`, `standard/long=enforce`)
+- `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `warn`; `production_strict` defaults to `enforce`)
+- `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (default by gate profile: `default=warn`, `production_strict=enforce`)
 - `SCRIPT_QUALITY_GATE_EVALUATOR=rules|hybrid|llm` (default `hybrid`)
 - `SCRIPT_QUALITY_GATE_LLM_SAMPLE` (profile defaults: `0.5` short, `1.0` standard/long)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=0|1` (default `1`)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=0|1` (default `1`)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE` (default `0.55`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=0|1` (default `1`; used in `rules`/`hybrid`/`llm`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE` (default `0.55`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES` (default `10`)
@@ -195,10 +211,18 @@ Useful env vars:
 - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS` (default `2`)
 - `SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS` (default `5200`), `SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS`
 - `SCRIPT_QUALITY_GATE_REPAIR_OUTPUT_TOKENS_HARD_CAP` (default `6400`)
+- `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` (default `300`)
+- `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS` (default `90`)
 - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=0|1` (default `1`)
 - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO` (default `0.85`)
 - `SCRIPT_QUALITY_MIN_WORDS_RATIO`, `SCRIPT_QUALITY_MAX_WORDS_RATIO`
 - `SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER`, `SCRIPT_QUALITY_MAX_REPEAT_LINE_RATIO`
+- `SCRIPT_QUALITY_MAX_TURN_WORDS`, `SCRIPT_QUALITY_MAX_LONG_TURN_COUNT`
+- `SCRIPT_QUALITY_MAX_QUESTION_RATIO`, `SCRIPT_QUALITY_MAX_QUESTION_STREAK`
+- `SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS`
+- `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED`
+- `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE`, `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE`
+- `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS`
 - `SCRIPT_QUALITY_REQUIRE_SUMMARY`, `SCRIPT_QUALITY_REQUIRE_CLOSING`
 - `SCRIPT_QUALITY_MIN_OVERALL_SCORE`, `SCRIPT_QUALITY_MIN_CADENCE_SCORE`, `SCRIPT_QUALITY_MIN_LOGIC_SCORE`, `SCRIPT_QUALITY_MIN_CLARITY_SCORE`
 - `SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS` (default `1400`), `SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS`

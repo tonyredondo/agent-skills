@@ -104,11 +104,11 @@ class EntryPointInterruptionTests(unittest.TestCase):
             )
             self.assertEqual(
                 make_script._default_script_gate_action(script_profile_name="standard"),  # noqa: SLF001
-                "enforce",
+                "warn",
             )
             self.assertEqual(
                 make_script._default_script_gate_action(script_profile_name="long"),  # noqa: SLF001
-                "enforce",
+                "warn",
             )
 
     def test_make_script_default_gate_action_production_strict_forces_enforce(self) -> None:
@@ -1550,7 +1550,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             with open(args.output_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             joined = " ".join(str(line.get("text", "")) for line in payload.get("lines", []))
-            self.assertIn("en resumen", joined.lower())
+            lowered = joined.lower()
+            self.assertTrue(("nos quedamos con" in lowered) or ("en resumen" in lowered))
             self.assertIn("Gracias por escuchar", joined)
 
     def test_make_podcast_marks_stuck_abort_from_structured_batch_error(self) -> None:

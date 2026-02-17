@@ -740,6 +740,7 @@ def main(argv: list[str] | None = None) -> int:
                     script_path=result.output_path,
                     client=client,
                     logger=logger,
+                    source_context=source_text,
                 )
                 quality_eval_seconds = time.time() - quality_eval_started
                 quality_report_initial = dict(quality_report_initial)
@@ -757,13 +758,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 repair_total_timeout_seconds = max(
                     1,
-                    _env_int("SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS", 120),
+                    _env_int("SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS", 300),
                 )
                 repair_attempt_timeout_seconds = max(
                     1,
                     _env_int(
                         "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS",
-                        45,
+                        90,
                     ),
                 )
                 quality_repair_started = time.time()
@@ -782,6 +783,7 @@ def main(argv: list[str] | None = None) -> int:
                         cancel_check=lambda: shutdown["requested"],
                         total_timeout_seconds=float(repair_total_timeout_seconds),
                         attempt_timeout_seconds=repair_attempt_timeout_seconds,
+                        source_context=source_text,
                     )
                 except InterruptedError:
                     quality_repair_seconds = time.time() - quality_repair_started

@@ -111,6 +111,18 @@ class ScriptQualityGateConfig:
     semantic_max_output_tokens: int = 220
     repair_revert_on_fail: bool = True
     repair_min_word_ratio: float = 0.85
+    max_turn_words: int = 58
+    max_long_turn_count: int = 3
+    max_question_ratio: float = 0.45
+    max_question_streak: int = 2
+    max_abrupt_transition_count: int = 2
+    source_balance_enabled: bool = True
+    source_balance_min_category_coverage: float = 0.6
+    source_balance_max_topic_share: float = 0.65
+    source_balance_min_lexical_hits: int = 4
+    llm_rule_judgments_enabled: bool = True
+    llm_rule_judgments_on_fail: bool = True
+    llm_rule_judgments_min_confidence: float = 0.55
 
     @staticmethod
     def from_env(*, profile_name: str) -> "ScriptQualityGateConfig":
@@ -121,9 +133,10 @@ class ScriptQualityGateConfig:
         is_production_strict = gate_profile == "production_strict"
         strict_alternation = _env_bool("SCRIPT_STRICT_HOST_ALTERNATION", True)
 
-        action = _env_str("SCRIPT_QUALITY_GATE_ACTION", "enforce").lower()
+        default_action = "enforce" if is_production_strict else "warn"
+        action = _env_str("SCRIPT_QUALITY_GATE_ACTION", default_action).lower()
         if action not in SUPPORTED_ACTIONS:
-            action = "enforce"
+            action = default_action
 
         evaluator = _env_str("SCRIPT_QUALITY_GATE_EVALUATOR", "hybrid").lower()
         if evaluator not in SUPPORTED_EVALUATORS:
@@ -197,6 +210,55 @@ class ScriptQualityGateConfig:
                 _env_float("SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO", 0.85),
                 0.0,
                 2.0,
+            ),
+            max_turn_words=max(
+                8,
+                _env_int("SCRIPT_QUALITY_MAX_TURN_WORDS", 58),
+            ),
+            max_long_turn_count=max(
+                0,
+                _env_int("SCRIPT_QUALITY_MAX_LONG_TURN_COUNT", 3),
+            ),
+            max_question_ratio=_clamp(
+                _env_float("SCRIPT_QUALITY_MAX_QUESTION_RATIO", 0.45),
+                0.0,
+                1.0,
+            ),
+            max_question_streak=max(
+                1,
+                _env_int("SCRIPT_QUALITY_MAX_QUESTION_STREAK", 2),
+            ),
+            max_abrupt_transition_count=max(
+                0,
+                _env_int("SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS", 2),
+            ),
+            source_balance_enabled=_env_bool("SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED", True),
+            source_balance_min_category_coverage=_clamp(
+                _env_float("SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE", 0.6),
+                0.0,
+                1.0,
+            ),
+            source_balance_max_topic_share=_clamp(
+                _env_float("SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE", 0.65),
+                0.0,
+                1.0,
+            ),
+            source_balance_min_lexical_hits=max(
+                1,
+                _env_int("SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS", 4),
+            ),
+            llm_rule_judgments_enabled=_env_bool(
+                "SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS",
+                True,
+            ),
+            llm_rule_judgments_on_fail=_env_bool(
+                "SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL",
+                True,
+            ),
+            llm_rule_judgments_min_confidence=_clamp(
+                _env_float("SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE", 0.55),
+                0.0,
+                1.0,
             ),
         )
 
