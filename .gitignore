@@ -32,6 +32,7 @@ htmlcov/
 **/debug_bundle_*.zip
 **/tmp_smoke_*/
 **/tmp_debug_*/
+**/tmp_eval_*/
 
 # Common temp/editor files
 *.log
