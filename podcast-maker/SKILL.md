@@ -147,7 +147,7 @@ Useful env vars:
 - `LOG_HEARTBEAT_SECONDS=15`
 - `LOG_DEBUG_EVENTS=1`
 - `SCRIPT_MODEL` / `MODEL` (default script model: `gpt-5.2`)
-- `SCRIPT_REASONING_EFFORT=low|medium|high` (default `medium`)
+- `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
 - `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, quality-eval stage override)
 - `SCRIPT_TONE_PROFILE=balanced|energetic|broadcast` (default `balanced`)
 - `SCRIPT_TRANSITION_STYLE=subtle|explicit` (default `subtle`)

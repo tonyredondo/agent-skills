@@ -85,10 +85,10 @@ def _resolve_openai_api_key() -> str:
 
 def _resolve_script_reasoning_effort() -> str:
     """Resolve reasoning effort level for script requests."""
-    effort = str(os.environ.get("SCRIPT_REASONING_EFFORT", "medium") or "").strip().lower()
+    effort = str(os.environ.get("SCRIPT_REASONING_EFFORT", "low") or "").strip().lower()
     if effort in {"low", "medium", "high"}:
         return effort
-    return "medium"
+    return "low"
 
 
 def _resolve_quality_eval_reasoning_effort(default_effort: str) -> str:

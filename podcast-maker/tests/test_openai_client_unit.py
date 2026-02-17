@@ -824,7 +824,7 @@ class OpenAIClientUnitTests(unittest.TestCase):
                     )
         self.assertEqual(client.api_key, "env-key")
 
-    def test_from_configs_reasoning_effort_defaults_to_medium(self) -> None:
+    def test_from_configs_reasoning_effort_defaults_to_low(self) -> None:
         logger = self.client.logger
         reliability = self.client.reliability
         with mock.patch.dict(
@@ -844,7 +844,7 @@ class OpenAIClientUnitTests(unittest.TestCase):
                 tts_backoff_base_ms=100,
                 tts_backoff_max_ms=1000,
             )
-        self.assertEqual(client.script_reasoning_effort, "medium")
+        self.assertEqual(client.script_reasoning_effort, "low")
 
     def test_from_configs_reasoning_effort_override(self) -> None:
         logger = self.client.logger
@@ -868,7 +868,7 @@ class OpenAIClientUnitTests(unittest.TestCase):
             )
         self.assertEqual(client.script_reasoning_effort, "high")
 
-    def test_from_configs_invalid_reasoning_effort_falls_back_to_medium(self) -> None:
+    def test_from_configs_invalid_reasoning_effort_falls_back_to_low(self) -> None:
         logger = self.client.logger
         reliability = self.client.reliability
         with mock.patch.dict(
@@ -888,7 +888,7 @@ class OpenAIClientUnitTests(unittest.TestCase):
                 tts_backoff_base_ms=100,
                 tts_backoff_max_ms=1000,
             )
-        self.assertEqual(client.script_reasoning_effort, "medium")
+        self.assertEqual(client.script_reasoning_effort, "low")
 
     def test_script_json_payload_uses_configured_reasoning_effort(self) -> None:
         self.client.script_reasoning_effort = "high"

@@ -79,7 +79,7 @@ Profile source-validation defaults:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `SCRIPT_REASONING_EFFORT` | `medium` | Base reasoning effort for script requests |
+| `SCRIPT_REASONING_EFFORT` | `low` | Base reasoning effort for script requests |
 | `SCRIPT_QUALITY_EVAL_REASONING_EFFORT` | `high` | Stage override for `script_quality_eval` freeform call |
 
 ## Audio Synthesis/Mix (config.py)

@@ -119,7 +119,7 @@ Actions:
    - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=0|1`
    - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=0|1`
    - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE`
-   - `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (quality-eval stage only; keep global `SCRIPT_REASONING_EFFORT` moderate)
+   - `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (quality-eval stage only; keep global `SCRIPT_REASONING_EFFORT` at default `low` unless needed)
   - semantic fallback (for summary/closing misses, independent from exact regex wording):
      - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=1`
      - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE=0.55`

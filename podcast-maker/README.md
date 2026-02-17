@@ -11,7 +11,7 @@ This document describes the production pipeline for script and audio generation.
 - Hybrid quality evaluation now supports structured LLM `rule_judgments` with confidence gating and a non-regression guard (deterministic `true` rules are not downgraded by LLM judgments).
 - Source-topic balance detection improved with multilingual alias hints (for example, psychology-related labels) to reduce false misses on category coverage.
 - Repair observability now includes prompt-size telemetry (`script_quality_repair_prompt_stats`, `script_quality_tail_repair_prompt_stats`) for timeout triage.
-- Reasoning effort is staged: global script default is `medium`, while quality-eval runs can use `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=high`.
+- Reasoning effort is staged: global script default is `low`, while quality-eval runs can use `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=high`.
 - Entrypoint repair budgets were raised to reduce long-context timeout churn (`SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS=300`, `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS=90`).
 
 ## Prerequisites
@@ -227,7 +227,7 @@ Common environment variables:
 
 - Logging: `LOG_LEVEL`, `LOG_HEARTBEAT_SECONDS`, `LOG_DEBUG_EVENTS`
 - Models: `SCRIPT_MODEL`/`MODEL`, `TTS_MODEL`
-- Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `medium`)
+- Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
 - Quality-eval-only reasoning override: `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, stage `script_quality_eval` only)
 - Script style controls:
   - `SCRIPT_TONE_PROFILE=balanced|energetic|broadcast` (default `balanced`)
