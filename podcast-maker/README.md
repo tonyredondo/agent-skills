@@ -1,5 +1,7 @@
 # Podcast Maker
 
+[![Podcast Maker Tests](https://github.com/tonyredondo/agent-skills/actions/workflows/podcast-maker-tests.yml/badge.svg)](https://github.com/tonyredondo/agent-skills/actions/workflows/podcast-maker-tests.yml)
+
 This document describes the production pipeline for script and audio generation.
 
 ## Prerequisites
