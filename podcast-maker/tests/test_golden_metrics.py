@@ -24,8 +24,9 @@ class GoldenMetricsTests(unittest.TestCase):
             ]
         )
         metrics = compute_script_metrics(payload)
-        self.assertTrue(metrics.has_en_resumen)
+        self.assertTrue(metrics.has_recap_signal)
         self.assertTrue(metrics.farewell_in_last_3)
+        self.assertTrue(metrics.meta_language_ok)
         self.assertEqual(metrics.unique_speakers, 2)
 
     def test_compare_against_baseline(self) -> None:
@@ -52,8 +53,9 @@ class GoldenMetricsTests(unittest.TestCase):
         cmp = compare_against_baseline(current, baseline)
         self.assertTrue(cmp["word_ratio_ok"])
         self.assertTrue(cmp["line_ratio_ok"])
-        self.assertTrue(cmp["summary_ok"])
+        self.assertTrue(cmp["recap_ok"])
         self.assertTrue(cmp["farewell_ok"])
+        self.assertTrue(cmp["meta_language_ok"])
 
     def test_compare_fails_when_word_ratio_too_low(self) -> None:
         baseline = compute_script_metrics(
@@ -98,7 +100,7 @@ class GoldenMetricsTests(unittest.TestCase):
             )
         )
         cmp = compare_against_baseline(current, baseline)
-        self.assertFalse(cmp["summary_ok"])
+        self.assertFalse(cmp["recap_ok"])
 
     def test_compare_fails_when_farewell_missing(self) -> None:
         baseline = compute_script_metrics(
@@ -121,6 +123,28 @@ class GoldenMetricsTests(unittest.TestCase):
         )
         cmp = compare_against_baseline(current, baseline)
         self.assertFalse(cmp["farewell_ok"])
+
+    def test_compare_fails_when_meta_language_present(self) -> None:
+        baseline = compute_script_metrics(
+            _payload(
+                [
+                    {"speaker": "A", "role": "Host1", "instructions": "x", "text": "uno dos tres cuatro"},
+                    {"speaker": "B", "role": "Host2", "instructions": "x", "text": "En Resumen: cinco seis"},
+                    {"speaker": "A", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos."},
+                ]
+            )
+        )
+        current = compute_script_metrics(
+            _payload(
+                [
+                    {"speaker": "A", "role": "Host1", "instructions": "x", "text": "segun el indice, vamos al siguiente tramo"},
+                    {"speaker": "B", "role": "Host2", "instructions": "x", "text": "En Resumen: cinco seis"},
+                    {"speaker": "A", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos."},
+                ]
+            )
+        )
+        cmp = compare_against_baseline(current, baseline)
+        self.assertFalse(cmp["meta_language_ok"])
 
 
 if __name__ == "__main__":

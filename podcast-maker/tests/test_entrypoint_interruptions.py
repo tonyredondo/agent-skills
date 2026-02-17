@@ -1550,7 +1550,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
             with open(args.output_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             joined = " ".join(str(line.get("text", "")) for line in payload.get("lines", []))
-            self.assertIn("en resumen", joined.lower())
+            self.assertIn("nos quedamos con", joined.lower())
             self.assertIn("Gracias por escuchar", joined)
 
     def test_make_podcast_marks_stuck_abort_from_structured_batch_error(self) -> None:

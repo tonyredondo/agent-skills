@@ -35,17 +35,20 @@ from .schema import (
 )
 from .script_postprocess import (
     detect_truncation_indices,
-    ensure_en_resumen,
-    ensure_farewell_last,
+    ensure_farewell_close,
+    ensure_recap_near_end,
     harden_script_structure,
 )
 
-SUMMARY_TOKENS = (
+RECAP_TOKENS = (
     "en resumen",
     "resumen",
     "resumiendo",
     "en sintesis",
     "en conclusion",
+    "nos quedamos con",
+    "en pocas palabras",
+    "idea central",
     "in summary",
     "to sum up",
     "overall",
@@ -114,7 +117,44 @@ INTERNAL_WORKFLOW_HINT_RE = re.compile(
     r"(?:\bdailyread\b|\bnota de transparencia\b|\bse elaboro\b|\busando el script\b|scripts/[a-z0-9._/-]+\.sh\b|\btavily\b|\bserper\b)",
     re.IGNORECASE,
 )
+PODCAST_META_LANGUAGE_RE = re.compile(
+    r"(?:\bseg[uú]n\s+el\s+[ií]ndice\b|\ben\s+este\s+resumen\b|\ben\s+el\s+siguiente\s+tramo\b|\bruta\s+del\s+episodio\b|\btabla\s+de\s+contenidos?\b)",
+    re.IGNORECASE,
+)
+DECLARED_TEASE_INTENT_RE = re.compile(
+    r"(?:\bte\s+voy\s+a\s+(?:chinchar|pinchar|provocar|picar)\b|\bvoy\s+a\s+(?:chincharte|pincharte|provocarte|picarte)\b|\bte\s+pincho\s+un\s+poco\b)",
+    re.IGNORECASE,
+)
 QUESTION_PUNCT_RE = re.compile(r"[¿?]")
+TRANSITION_CONNECTOR_RE = re.compile(
+    r"^(?:y\s+de\s+hecho|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|a\s+partir\s+de\s+ahi|pasando\s+a|en\s+paralelo|si\s+lo\s+conectamos|en\s+ese\s+sentido|por\s+cierto)\b",
+    re.IGNORECASE,
+)
+SOURCE_TIMELINE_INDEX_ITEM_RE = re.compile(
+    r"^\s*-\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+·\s+([^·]+)\s+·\s+(.+?)\s*(?:\([^)]*\))?\s*$"
+)
+SOURCE_BALANCE_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "about",
+    "over",
+    "under",
+    "como",
+    "para",
+    "desde",
+    "sobre",
+    "entre",
+    "hacia",
+    "cuando",
+    "donde",
+    "porque",
+}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -154,7 +194,7 @@ def _has_summary(lines: List[Dict[str, str]]) -> bool:
     for line in lines:
         raw = str(line.get("text", ""))
         text = _normalized_text(raw)
-        if any(token in text for token in SUMMARY_TOKENS):
+        if any(token in text for token in RECAP_TOKENS):
             return True
         if SUMMARY_LABEL_RE.search(text):
             return True
@@ -185,7 +225,7 @@ def _summary_line_index(lines: List[Dict[str, str]]) -> int:
         text = _normalized_text(raw)
         if not text:
             continue
-        if any(token in text for token in SUMMARY_TOKENS):
+        if any(token in text for token in RECAP_TOKENS):
             return idx
         if SUMMARY_LABEL_RE.search(text):
             return idx
@@ -315,6 +355,195 @@ def _repeat_line_ratio(lines: List[Dict[str, str]]) -> float:
     return float(repeated) / float(max(1, len(lines)))
 
 
+def _line_word_count(text: str) -> int:
+    return len(re.findall(r"\b\w+\b", str(text or ""), re.UNICODE))
+
+
+def _long_turn_count(lines: List[Dict[str, str]], *, max_words: int) -> int:
+    threshold = max(8, int(max_words))
+    count = 0
+    for line in lines:
+        if _line_word_count(str(line.get("text", ""))) > threshold:
+            count += 1
+    return count
+
+
+def _podcast_meta_language_count(lines: List[Dict[str, str]]) -> int:
+    count = 0
+    for line in lines:
+        text = str(line.get("text", "")).strip()
+        if text and PODCAST_META_LANGUAGE_RE.search(text):
+            count += 1
+    return count
+
+
+def _declared_tease_intent_count(lines: List[Dict[str, str]]) -> int:
+    count = 0
+    for line in lines:
+        text = str(line.get("text", "")).strip()
+        if text and DECLARED_TEASE_INTENT_RE.search(text):
+            count += 1
+    return count
+
+
+def _question_cadence_stats(lines: List[Dict[str, str]]) -> Dict[str, float]:
+    total = max(1, len(lines))
+    question_lines = 0
+    current_streak = 0
+    max_streak = 0
+    for line in lines:
+        is_question = _is_question_like(str(line.get("text", "")))
+        if is_question:
+            question_lines += 1
+            current_streak += 1
+            max_streak = max(max_streak, current_streak)
+        else:
+            current_streak = 0
+    return {
+        "question_lines": float(question_lines),
+        "question_ratio": float(question_lines) / float(total),
+        "max_question_streak": float(max_streak),
+    }
+
+
+def _transition_smoothness_stats(lines: List[Dict[str, str]]) -> Dict[str, float]:
+    abrupt = 0
+    checked_pairs = 0
+    for idx in range(1, len(lines)):
+        prev_text = str(lines[idx - 1].get("text", "")).strip()
+        curr_text = str(lines[idx].get("text", "")).strip()
+        if not prev_text or not curr_text:
+            continue
+        prev_tokens = set(_tokenize_content(prev_text))
+        curr_tokens = set(_tokenize_content(curr_text))
+        if len(prev_tokens) < 4 or len(curr_tokens) < 4:
+            continue
+        checked_pairs += 1
+        overlap = prev_tokens.intersection(curr_tokens)
+        overlap_ratio = float(len(overlap)) / float(max(1, len(curr_tokens)))
+        has_connector = TRANSITION_CONNECTOR_RE.search(curr_text.lower()) is not None
+        if overlap_ratio < 0.08 and not has_connector:
+            abrupt += 1
+    abrupt_ratio = float(abrupt) / float(max(1, checked_pairs))
+    return {
+        "abrupt_transition_count": float(abrupt),
+        "abrupt_transition_ratio": abrupt_ratio,
+        "checked_pairs": float(checked_pairs),
+    }
+
+
+def _extract_source_category_profiles(source_context: str) -> Dict[str, Dict[str, Any]]:
+    profiles: Dict[str, Dict[str, Any]] = {}
+    for raw_line in str(source_context or "").splitlines()[:420]:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        match = SOURCE_TIMELINE_INDEX_ITEM_RE.match(line)
+        if match is None:
+            continue
+        category = str(match.group(1) or "").strip()
+        title = str(match.group(2) or "").strip()
+        if not category or not title:
+            continue
+        normalized_category = _normalized_text(category)
+        profile = profiles.setdefault(
+            normalized_category,
+            {
+                "category": category,
+                "source_count": 0,
+                "keywords": set(),
+            },
+        )
+        profile["source_count"] = int(profile.get("source_count", 0)) + 1
+        for token in _tokenize_content(title):
+            if len(token) < 4 or token in SOURCE_BALANCE_STOPWORDS:
+                continue
+            profile["keywords"].add(token)
+        # Include category aliases to improve cross-language matching.
+        for alias in (
+            normalized_category,
+            normalized_category.replace("science", "ciencia"),
+            normalized_category.replace("technology", "tecnologia"),
+            normalized_category.replace("health", "salud"),
+            normalized_category.replace("business", "negocio"),
+            normalized_category.replace("world", "mundo"),
+            normalized_category.replace("culture", "cultura"),
+        ):
+            alias_tokens = _tokenize_content(alias)
+            for token in alias_tokens:
+                if len(token) >= 4:
+                    profile["keywords"].add(token)
+    return profiles
+
+
+def _source_topic_balance_stats(
+    *,
+    lines: List[Dict[str, str]],
+    source_context: str | None,
+    quality_cfg: ScriptQualityGateConfig,
+) -> Dict[str, Any]:
+    if not quality_cfg.source_balance_enabled:
+        return {"status": "disabled", "applicable": False, "reason": "source_balance_disabled"}
+    source_text = str(source_context or "").strip()
+    if not source_text:
+        return {"status": "not_applicable", "applicable": False, "reason": "missing_source_context"}
+    profiles = _extract_source_category_profiles(source_text)
+    if len(profiles) < 2:
+        return {
+            "status": "not_applicable",
+            "applicable": False,
+            "reason": "insufficient_source_categories",
+            "source_category_count": int(len(profiles)),
+        }
+    category_scores: Dict[str, int] = {key: 0 for key in profiles}
+    for line in lines:
+        line_tokens = set(_tokenize_content(str(line.get("text", ""))))
+        if len(line_tokens) < 3:
+            continue
+        for category_key, profile in profiles.items():
+            keywords = set(profile.get("keywords", set()))
+            if not keywords:
+                continue
+            overlap = line_tokens.intersection(keywords)
+            if len(overlap) >= 1:
+                category_scores[category_key] = int(category_scores.get(category_key, 0)) + 1
+
+    total_hits = int(sum(category_scores.values()))
+    if total_hits < max(1, int(quality_cfg.source_balance_min_lexical_hits)):
+        return {
+            "status": "not_applicable",
+            "applicable": False,
+            "reason": "insufficient_source_lexical_overlap",
+            "total_hits": total_hits,
+            "source_category_count": int(len(profiles)),
+        }
+
+    covered_categories = [key for key, score in category_scores.items() if int(score) > 0]
+    coverage_ratio = float(len(covered_categories)) / float(max(1, len(profiles)))
+    shares: Dict[str, float] = {}
+    for category_key, score in category_scores.items():
+        shares[category_key] = float(score) / float(max(1, total_hits))
+    max_topic_share = max(shares.values()) if shares else 1.0
+    passed = (
+        coverage_ratio >= float(quality_cfg.source_balance_min_category_coverage)
+        and max_topic_share <= float(quality_cfg.source_balance_max_topic_share)
+    )
+    return {
+        "status": "evaluated",
+        "applicable": True,
+        "pass": bool(passed),
+        "coverage_ratio": coverage_ratio,
+        "max_topic_share": max_topic_share,
+        "total_hits": total_hits,
+        "source_category_count": int(len(profiles)),
+        "covered_category_count": int(len(covered_categories)),
+        "category_scores": {
+            str(profiles[key].get("category", key)): int(score)
+            for key, score in category_scores.items()
+        },
+    }
+
+
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     text = str(raw_text or "").strip()
     if not text:
@@ -395,7 +624,14 @@ def _build_llm_prompt(
         "Return ONLY JSON object with keys:\n"
         "overall_score, cadence_score, logic_score, clarity_score, pass, reasons.\n"
         "Scores are numbers from 0 to 5.\n"
-        "Set pass=true only if cadence, logic and clarity are coherent and useful.\n\n"
+        "Set pass=true only if the script sounds natural and useful for spoken audio.\n\n"
+        "Scoring rubric:\n"
+        "- Naturalness: no document/meta narration (index/summary-section/tramo workflow talk).\n"
+        "- Interaction: hosts react to each other (questions, answers, contrast), not parallel monologues.\n"
+        "- Friction quality: disagreement and challenge are welcome, but no explicit intent announcements like 'te voy a chinchar/pinchar'.\n"
+        "- Topic balance: no single early topic dominates disproportionately when the script is multi-topic.\n"
+        "- Transitions: topic switches feel connected and non-abrupt.\n"
+        "- Closing: recap + farewell are present and coherent.\n\n"
         f"Target range words: {script_cfg.min_words}-{script_cfg.max_words}\n"
         f"Actual words: {word_count}\n\n"
         "SCRIPT:\n"
@@ -448,6 +684,7 @@ def evaluate_script_quality(
     script_path: str,
     client: OpenAIClient | None = None,
     logger: Logger | None = None,
+    source_context: str | None = None,
 ) -> Dict[str, Any]:
     """Evaluate script quality and return normalized decision report."""
     started = time.time()
@@ -462,8 +699,26 @@ def evaluate_script_quality(
     summary_ok = _has_summary(lines)
     closing_ok = _has_closing(lines)
     internal_workflow_count = _internal_workflow_line_count(lines)
+    podcast_meta_language_hits = _podcast_meta_language_count(lines)
+    declared_tease_hits = _declared_tease_intent_count(lines)
     max_run = _max_consecutive_speaker_run(lines)
     repeat_ratio = _repeat_line_ratio(lines)
+    max_turn_words = max(8, int(quality_cfg.max_turn_words))
+    long_turn_count = _long_turn_count(lines, max_words=max_turn_words)
+    max_long_turn_count = max(0, int(quality_cfg.max_long_turn_count))
+    question_stats = _question_cadence_stats(lines)
+    max_question_ratio = _clamp(float(quality_cfg.max_question_ratio), 0.0, 1.0)
+    max_question_streak = max(1, int(quality_cfg.max_question_streak))
+    transition_stats = _transition_smoothness_stats(lines)
+    max_abrupt_transition_count = max(0, int(quality_cfg.max_abrupt_transition_count))
+    source_topic_balance = _source_topic_balance_stats(
+        lines=lines,
+        source_context=source_context,
+        quality_cfg=quality_cfg,
+    )
+    source_topic_balance_ok = True
+    if bool(source_topic_balance.get("applicable", False)):
+        source_topic_balance_ok = bool(source_topic_balance.get("pass", False))
     min_words_required = int(round(float(script_cfg.min_words) * quality_cfg.min_words_ratio))
     max_words_allowed = int(round(float(script_cfg.max_words) * quality_cfg.max_words_ratio))
 
@@ -476,6 +731,18 @@ def evaluate_script_quality(
         "closing_ok": (not quality_cfg.require_closing) or closing_ok,
         "open_questions_resolved_ok": not _has_unanswered_tail_question(lines),
         "no_internal_workflow_meta_ok": internal_workflow_count == 0,
+        "no_podcast_meta_language_ok": podcast_meta_language_hits == 0,
+        "no_declared_tease_intent_ok": declared_tease_hits == 0,
+        "line_length_ok": long_turn_count <= max_long_turn_count,
+        "question_cadence_ok": (
+            float(question_stats.get("question_ratio", 0.0)) <= max_question_ratio
+            and int(question_stats.get("max_question_streak", 0.0)) <= max_question_streak
+        ),
+        "transition_smoothness_ok": (
+            line_count < 10
+            or int(transition_stats.get("abrupt_transition_count", 0.0)) <= max_abrupt_transition_count
+        ),
+        "source_topic_balance_ok": source_topic_balance_ok,
     }
     semantic_info: Dict[str, Any] = {
         "enabled": bool(quality_cfg.semantic_rule_fallback),
@@ -695,6 +962,33 @@ def evaluate_script_quality(
             "min_words_required": int(max(1, min_words_required)),
             "max_words_allowed": int(max(1, max_words_allowed)),
             "internal_workflow_meta_lines": int(internal_workflow_count),
+            "podcast_meta_language_hits": int(podcast_meta_language_hits),
+            "declared_tease_hits": int(declared_tease_hits),
+            "max_turn_words_threshold": int(max_turn_words),
+            "long_turn_count": int(long_turn_count),
+            "max_long_turn_count_allowed": int(max_long_turn_count),
+            "question_ratio": round(float(question_stats.get("question_ratio", 0.0)), 4),
+            "max_question_streak": int(question_stats.get("max_question_streak", 0.0)),
+            "max_question_ratio_allowed": round(float(max_question_ratio), 4),
+            "max_question_streak_allowed": int(max_question_streak),
+            "abrupt_transition_count": int(transition_stats.get("abrupt_transition_count", 0.0)),
+            "abrupt_transition_ratio": round(float(transition_stats.get("abrupt_transition_ratio", 0.0)), 4),
+            "max_abrupt_transition_count_allowed": int(max_abrupt_transition_count),
+            "source_topic_balance_status": str(source_topic_balance.get("status", "not_applicable")),
+            "source_topic_balance_applicable": bool(source_topic_balance.get("applicable", False)),
+            "source_topic_balance_pass": bool(source_topic_balance.get("pass", True)),
+            "source_topic_balance_coverage_ratio": (
+                round(float(source_topic_balance.get("coverage_ratio", 0.0)), 4)
+                if source_topic_balance.get("coverage_ratio") is not None
+                else None
+            ),
+            "source_topic_balance_max_topic_share": (
+                round(float(source_topic_balance.get("max_topic_share", 0.0)), 4)
+                if source_topic_balance.get("max_topic_share") is not None
+                else None
+            ),
+            "source_topic_balance_total_hits": int(source_topic_balance.get("total_hits", 0) or 0),
+            "source_topic_balance_reason": str(source_topic_balance.get("reason", "")),
             "semantic_fallback_used": bool(semantic_info.get("used", False)),
         },
         "llm_called": llm_called,
@@ -705,6 +999,7 @@ def evaluate_script_quality(
         "llm_truncation_claims_filtered": int(llm_truncation_claims_filtered),
         "llm_degraded_to_rules": bool(llm_error and quality_cfg.evaluator in {"llm", "hybrid"}),
         "semantic_rule_fallback": semantic_info,
+        "source_topic_balance": source_topic_balance,
         "hard_fail_eligible": bool(hard_fail_eligible),
         "score_blocking_enabled": bool(strict_score_blocking),
         "score_blocking_critical_threshold": float(critical_score_threshold),
@@ -805,6 +1100,7 @@ def _build_repair_prompt(
         - Keep instructions in English single-line format.
         - Preserve conversation flow and avoid generic filler.
         - Do not include internal workflow/tooling disclosures in spoken text (for example script paths, shell commands, DailyRead pipeline notes, Tavily, Serper).
+        - Do not use document meta narration (for example: "segun el indice", "en este resumen", "siguiente tramo", "ruta del episodio", "tabla de contenidos").
         - Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
         - Avoid repetitive line openers across consecutive turns (especially repeated "Y ...").
         - Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms.
@@ -817,8 +1113,9 @@ def _build_repair_prompt(
         - Add occasional respectful contrast/challenge between hosts to improve engagement, then resolve clearly.
         - Use occasional concrete analogies to explain technical points naturally.
         - Humor is optional: if present, keep it brief, respectful, and relevant to the topic.
+        - Never pre-announce tease/challenge intent with phrases like "te voy a chinchar/pinchar/provocar".
         - Do not leave open questions unresolved before the summary/closing.
-        - If a host asks a direct question near the end, include an explicit answer from the counterpart host before "En Resumen" or farewell.
+        - If a host asks a direct question near the end, include an explicit answer from the counterpart host before recap/farewell.
         - In the final 2-3 turns before summary/farewell, avoid introducing new questions.
         - Keep pre-summary closure turns declarative and conclusive.
         - Keep recap lines concise and listener-friendly; split overloaded closing lists into two short turns if needed.
@@ -842,8 +1139,8 @@ def _deterministic_repair_payload(
 ) -> Dict[str, List[Dict[str, str]]]:
     """Apply deterministic structure fixes before any LLM repair."""
     base_lines = list(payload.get("lines", []))
-    lines = ensure_en_resumen(base_lines)
-    lines = ensure_farewell_last(lines)
+    lines = ensure_recap_near_end(base_lines)
+    lines = ensure_farewell_close(lines)
     lines = harden_script_structure(
         lines,
         max_consecutive_same_speaker=quality_cfg.max_consecutive_same_speaker,
@@ -883,6 +1180,7 @@ def attempt_script_quality_repair(
     cancel_check: Callable[[], bool] | None = None,
     total_timeout_seconds: float | None = None,
     attempt_timeout_seconds: int | None = None,
+    source_context: str | None = None,
 ) -> Dict[str, Any]:
     """Attempt deterministic and LLM-based repair for failed gate reports."""
     initial_pass = bool(initial_report.get("pass", False))
@@ -1005,6 +1303,7 @@ def attempt_script_quality_repair(
             script_path=script_path,
             client=client,
             logger=logger,
+            source_context=source_context,
         )
         deterministic_pass = bool(deterministic_report.get("pass", False))
         history.append(
@@ -1119,6 +1418,7 @@ def attempt_script_quality_repair(
                 script_path=script_path,
                 client=client,
                 logger=logger,
+                source_context=source_context,
             )
             candidate_word_count = int(
                 candidate_report.get(

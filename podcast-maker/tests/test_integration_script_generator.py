@@ -938,6 +938,38 @@ class ScriptGeneratorIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def test_source_topic_plan_builds_category_mix_for_outline(self) -> None:
+        cfg = ScriptConfig.from_env(profile_name="short", target_minutes=6, words_per_min=120, min_words=180, max_words=260)
+        reliability = ReliabilityConfig.from_env()
+        logger = Logger.create(
+            LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+        )
+        client = FakeScriptClient()
+        gen = ScriptGenerator(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+        source_text = """
+        - 2026-02-16 09:30 · Science · Quantum sensor drift benchmark (src 1)
+        - 2026-02-16 10:15 · Health · New trial protocol for low-dose therapy (src 2)
+        - 2026-02-16 11:00 · Business · Cost controls for pilot rollout (src 3)
+        - 2026-02-16 11:45 · Science · Diamond calibration update (src 4)
+        - 2026-02-16 12:30 · Technology · On-device telemetry filters (src 5)
+        """.strip()
+        entries = gen._extract_source_index_entries(source_text)  # noqa: SLF001
+        self.assertGreaterEqual(len(entries), 4)
+        gen._source_index_entries = entries  # noqa: SLF001
+        outline = gen._build_outline(  # noqa: SLF001
+            chunks=[
+                "chunk uno",
+                "chunk dos",
+                "chunk tres",
+                "chunk cuatro",
+            ],
+            min_words=cfg.min_words,
+            max_words=cfg.max_words,
+        )
+        categories = [str(section.get("category", "")).strip() for section in outline]
+        self.assertTrue(all(bool(category) for category in categories))
+        self.assertGreaterEqual(len(set(categories)), 3)
+
     def test_first_chunk_prompt_includes_opening_agenda_guidance(self) -> None:
         cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, words_per_min=120, min_words=80, max_words=120)
         reliability = ReliabilityConfig.from_env()
@@ -970,8 +1002,9 @@ class ScriptGeneratorIntegrationTests(unittest.TestCase):
         self.assertIn("comenzamos con", first_chunk_prompt)
         self.assertIn("Avoid \"two parallel monologues\"", first_chunk_prompt)
         self.assertIn("Include direct host-to-host questions regularly", first_chunk_prompt)
-        self.assertIn("must answer explicitly before \"En Resumen\" or farewell", first_chunk_prompt)
-        self.assertIn("brief friendly joke/tease", first_chunk_prompt)
+        self.assertIn("must answer explicitly before recap or farewell", first_chunk_prompt)
+        self.assertIn("Never pre-announce tension", first_chunk_prompt)
+        self.assertIn("Section category hint", first_chunk_prompt)
         self.assertIn("final 3 turns before recap/farewell, do not introduce new questions", first_chunk_prompt)
         self.assertNotIn("include a brief natural roadmap of the episode", later_chunk_prompt)
 

@@ -20,12 +20,15 @@ def _normalized_text(value: str) -> str:
     return re.sub(r"\s+", " ", deaccented)
 
 
-SUMMARY_TOKENS = (
+RECAP_TOKENS = (
     "en resumen",
     "resumen",
     "resumiendo",
     "en sintesis",
     "en conclusion",
+    "nos quedamos con",
+    "en pocas palabras",
+    "idea central",
     "in summary",
     "to sum up",
     "overall",
@@ -33,6 +36,11 @@ SUMMARY_TOKENS = (
     "key takeaway",
     "em resumo",
     "en bref",
+)
+
+META_LANGUAGE_RE = re.compile(
+    r"(?:\bseg[uú]n\s+el\s+[ií]ndice\b|\ben\s+este\s+resumen\b|\ben\s+el\s+siguiente\s+tramo\b|\bruta\s+del\s+episodio\b|\btabla\s+de\s+contenidos?\b)",
+    re.IGNORECASE,
 )
 
 FAREWELL_TOKENS = (
@@ -61,8 +69,9 @@ class ScriptMetrics:
     line_count: int
     word_count: int
     unique_speakers: int
-    has_en_resumen: bool
+    has_recap_signal: bool
     farewell_in_last_3: bool
+    meta_language_ok: bool
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert dataclass metrics into plain dict."""
@@ -70,8 +79,9 @@ class ScriptMetrics:
             "line_count": self.line_count,
             "word_count": self.word_count,
             "unique_speakers": self.unique_speakers,
-            "has_en_resumen": self.has_en_resumen,
+            "has_recap_signal": self.has_recap_signal,
             "farewell_in_last_3": self.farewell_in_last_3,
+            "meta_language_ok": self.meta_language_ok,
         }
 
 
@@ -80,9 +90,14 @@ def compute_script_metrics(payload: Dict[str, Any]) -> ScriptMetrics:
     validated = validate_script_payload(payload)
     lines = validated["lines"]
     speakers = {line["speaker"] for line in lines if line.get("speaker")}
-    has_summary = any(
-        any(token in _normalized_text(line["text"]) for token in SUMMARY_TOKENS)
+    has_recap = any(
+        any(token in _normalized_text(line["text"]) for token in RECAP_TOKENS)
         for line in lines
+    )
+    meta_language_hits = sum(
+        1
+        for line in lines
+        if META_LANGUAGE_RE.search(str(line.get("text", "")))
     )
     tail = lines[-3:]
     farewell_in_tail = any(
@@ -96,8 +111,9 @@ def compute_script_metrics(payload: Dict[str, Any]) -> ScriptMetrics:
         line_count=len(lines),
         word_count=count_words_from_lines(lines),
         unique_speakers=len(speakers),
-        has_en_resumen=has_summary,
+        has_recap_signal=has_recap,
         farewell_in_last_3=farewell_in_tail,
+        meta_language_ok=meta_language_hits == 0,
     )
 
 
@@ -125,7 +141,9 @@ def compare_against_baseline(
         "line_ratio": line_ratio,
         "word_ratio_ok": min_word_ratio <= word_ratio <= max_word_ratio,
         "line_ratio_ok": min_line_ratio <= line_ratio <= max_line_ratio,
-        "summary_ok": current.has_en_resumen,
+        "recap_ok": current.has_recap_signal,
+        "summary_ok": current.has_recap_signal,
         "farewell_ok": current.farewell_in_last_3,
+        "meta_language_ok": current.meta_language_ok,
     }
 

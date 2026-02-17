@@ -45,8 +45,8 @@ from .script_chunker import split_source_chunks, target_chunk_count
 from .script_postprocess import (
     dedupe_append,
     evaluate_script_completeness,
-    ensure_en_resumen,
-    ensure_farewell_last,
+    ensure_farewell_close,
+    ensure_recap_near_end,
     fix_mid_farewells,
     harden_script_structure,
     repair_script_completeness,
@@ -85,6 +85,9 @@ SOURCE_INDEX_HEADER_RE = re.compile(
 )
 SOURCE_INDEX_ITEM_RE = re.compile(
     r"(?i)^\s*(?:[-*•]\s+|\d{1,2}[.)]\s+|(?:tema|topic)\s+\d+\s*[:\-]\s+)(.+?)\s*$"
+)
+SOURCE_TIMELINE_INDEX_ITEM_RE = re.compile(
+    r"^\s*-\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+·\s+([^·]+)\s+·\s+(.+?)\s*(?:\([^)]*\))?\s*$"
 )
 
 
@@ -316,6 +319,193 @@ class ScriptGenerator:
             cleaned = " ".join(words[:12]).strip(" ,;:-")
         return cleaned
 
+    def _extract_source_index_entries(self, source_text: str) -> List[Dict[str, str]]:
+        """Extract category/topic entries from timeline-like source indexes."""
+        lines = str(source_text or "").splitlines()
+        if not lines:
+            return []
+        entries: List[Dict[str, str]] = []
+        for raw_line in lines[:320]:
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            match = SOURCE_TIMELINE_INDEX_ITEM_RE.match(line)
+            if match is None:
+                # Once timeline entries are collected, stop when prose starts.
+                if entries and len(line.split()) > 16 and not line.startswith("-"):
+                    break
+                continue
+            category = re.sub(r"\s+", " ", str(match.group(1) or "").strip())
+            title = re.sub(r"\s+", " ", str(match.group(2) or "").strip())
+            if not category or not title:
+                continue
+            topic_hint = self._normalize_intro_topic(
+                title.replace("_", " ").replace("-", " ")
+            )
+            if not topic_hint:
+                topic_hint = self._normalize_intro_topic(title)
+            entries.append(
+                {
+                    "category": category,
+                    "title": title,
+                    "topic": topic_hint or "tema general",
+                }
+            )
+            if len(entries) >= 120:
+                break
+        return entries
+
+    def _build_source_topic_plan(
+        self,
+        *,
+        entries: List[Dict[str, str]],
+        total_chunks: int,
+        target_words: int,
+    ) -> List[Dict[str, Any]]:
+        """Build per-chunk topic/category plan from source index density."""
+        if not entries or total_chunks <= 0:
+            return []
+        category_counts: Dict[str, int] = {}
+        category_topics: Dict[str, List[str]] = {}
+        for item in entries:
+            category = str(item.get("category", "")).strip() or "General"
+            topic = str(item.get("topic", "")).strip() or "tema general"
+            category_counts[category] = int(category_counts.get(category, 0)) + 1
+            topics = category_topics.setdefault(category, [])
+            if topic and topic not in topics:
+                topics.append(topic)
+
+        ordered_categories = sorted(
+            category_counts.keys(),
+            key=lambda key: (-int(category_counts.get(key, 0)), key.lower()),
+        )
+        if not ordered_categories:
+            return []
+
+        chunk_budget: Dict[str, int] = {}
+        if len(ordered_categories) <= total_chunks:
+            for category in ordered_categories:
+                chunk_budget[category] = 1
+            remaining_slots = max(0, int(total_chunks) - len(ordered_categories))
+            if remaining_slots > 0:
+                total_count = float(sum(category_counts.values()) or 1)
+                extras_allocated = 0
+                for category in ordered_categories:
+                    raw_extra = (float(category_counts[category]) / total_count) * float(remaining_slots)
+                    extra = int(math.floor(raw_extra))
+                    if extra > 0:
+                        chunk_budget[category] += extra
+                        extras_allocated += extra
+                remainder = max(0, remaining_slots - extras_allocated)
+                if remainder > 0:
+                    remainders = sorted(
+                        ordered_categories,
+                        key=lambda key: (
+                            -(
+                                (float(category_counts[key]) / float(total_count)) * float(remaining_slots)
+                                - math.floor(
+                                    (float(category_counts[key]) / float(total_count))
+                                    * float(remaining_slots)
+                                )
+                            ),
+                            -int(category_counts[key]),
+                            key.lower(),
+                        ),
+                    )
+                    for category in remainders[:remainder]:
+                        chunk_budget[category] = int(chunk_budget.get(category, 0)) + 1
+        else:
+            # If there are more categories than chunks, prioritize densest ones.
+            selected = ordered_categories[:total_chunks]
+            for category in selected:
+                chunk_budget[category] = 1
+
+        sequence: List[str] = []
+        previous_category = ""
+        while len(sequence) < total_chunks:
+            candidates = [cat for cat, remaining in chunk_budget.items() if int(remaining) > 0]
+            if not candidates:
+                break
+            candidates = sorted(
+                candidates,
+                key=lambda key: (-int(chunk_budget.get(key, 0)), -int(category_counts.get(key, 0)), key.lower()),
+            )
+            picked = candidates[0]
+            if len(candidates) > 1 and picked == previous_category:
+                picked = candidates[1]
+            sequence.append(picked)
+            chunk_budget[picked] = int(chunk_budget.get(picked, 0)) - 1
+            previous_category = picked
+
+        if not sequence:
+            return []
+        while len(sequence) < total_chunks:
+            sequence.append(sequence[-1])
+        if len(sequence) > total_chunks:
+            sequence = sequence[:total_chunks]
+
+        total_count = float(sum(category_counts.values()) or 1.0)
+        category_word_budget: Dict[str, int] = {}
+        for category, count in category_counts.items():
+            share = float(count) / total_count
+            category_word_budget[category] = max(90, int(round(float(target_words) * share)))
+
+        topic_cursor: Dict[str, int] = {category: 0 for category in category_topics}
+        per_category_chunk_count: Dict[str, int] = {}
+        for category in sequence:
+            per_category_chunk_count[category] = int(per_category_chunk_count.get(category, 0)) + 1
+
+        plan: List[Dict[str, Any]] = []
+        for idx, category in enumerate(sequence, start=1):
+            topics = category_topics.get(category, [])
+            cursor = int(topic_cursor.get(category, 0))
+            if topics:
+                topic = topics[cursor % len(topics)]
+                topic_cursor[category] = cursor + 1
+            else:
+                topic = "tema general"
+            chunks_for_category = max(1, int(per_category_chunk_count.get(category, 1)))
+            target_for_chunk = max(
+                80,
+                int(round(float(category_word_budget.get(category, 120)) / float(chunks_for_category))),
+            )
+            plan.append(
+                {
+                    "chunk_idx": idx,
+                    "category": category,
+                    "topic": topic,
+                    "objective": (
+                        "Develop this category with source-grounded precision, concrete detail, and a smooth bridge "
+                        "from the previous segment."
+                    ),
+                    "target_words": target_for_chunk,
+                    "category_source_count": int(category_counts.get(category, 0)),
+                }
+            )
+        return plan
+
+    def _outline_category_coverage_ratio(
+        self,
+        *,
+        outline: List[Dict[str, Any]],
+        chunks_done: int,
+    ) -> float:
+        """Estimate coverage ratio of planned categories by completed chunks."""
+        planned_categories = {
+            str(section.get("category", "")).strip()
+            for section in list(outline or [])
+            if str(section.get("category", "")).strip()
+        }
+        if not planned_categories:
+            return 1.0
+        limit = max(0, min(int(chunks_done), len(outline)))
+        covered_categories = {
+            str(section.get("category", "")).strip()
+            for section in list(outline or [])[:limit]
+            if str(section.get("category", "")).strip()
+        }
+        return float(len(covered_categories)) / float(max(1, len(planned_categories)))
+
     def _extract_source_agenda_topics(self, source_text: str) -> List[str]:
         lines = [line.strip() for line in str(source_text or "").splitlines() if str(line or "").strip()]
         if not lines:
@@ -439,6 +629,7 @@ class ScriptGenerator:
             {opening_agenda_line}
             - Avoid placeholders.
             - Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            - Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             - Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
             - Use elegant spoken transitions between topics instead of numeric labels.
             - Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
@@ -450,10 +641,11 @@ class ScriptGenerator:
             - Include direct host-to-host questions regularly but without overuse (roughly 1 question every 4-6 turns).
             - Avoid interview-like cadence: not every turn should end with a question; mix questions with assertions, reactions, and mini-conclusions.
             - Introduce brief, respectful tension when relevant (contrast viewpoints, probe assumptions, then resolve with evidence).
+            - Respectful disagreement, light humor, and uncomfortable questions are allowed when they improve clarity.
+            - Never pre-announce tension with lines like "te voy a chinchar/pinchar", "te voy a provocar", or similar meta-intent phrasing.
             - Use occasional everyday analogies to explain complex technical ideas more naturally.
-            - You may include a brief friendly joke/tease occasionally (at most once every 8-10 turns), only if it feels natural and does not reduce clarity.
             - Do not leave direct questions unresolved near the ending.
-            - If a host asks a direct question in the final stretch, the counterpart host must answer explicitly before "En Resumen" or farewell.
+            - If a host asks a direct question in the final stretch, the counterpart host must answer explicitly before recap or farewell.
             - In the final 3 turns before recap/farewell, do not introduce new questions.
             - Right before recap, prefer short declarative synthesis/answer turns (no interrogative endings).
             - Hard cap: keep total episode length at or below {max_words} words.
@@ -469,6 +661,7 @@ class ScriptGenerator:
             Remaining required words to hit minimum target: about {remaining_to_min}.
             Planning hint per remaining chunk: at least ~{remaining_to_min_per_chunk}, ideally <= ~{remaining_to_max_per_chunk}.
             Section objective: {section_plan.get("objective", "develop next core topic")}
+            Section category hint: {section_plan.get("category", "general")}
             Section topic hint: {section_plan.get("topic", "general")}
             Section target words: {section_target}
             {tone_guidance}
@@ -507,6 +700,11 @@ class ScriptGenerator:
             target_minutes=self.config.target_minutes,
             chunk_target_minutes=self.config.chunk_target_minutes,
         )
+        source_plan = self._build_source_topic_plan(
+            entries=list(getattr(self, "_source_index_entries", [])),
+            total_chunks=total_chunks,
+            target_words=target_words,
+        )
         per_chunk = max(80, int(target_words / max(1, total_chunks)))
         remainder = max(0, target_words - (per_chunk * total_chunks))
 
@@ -515,9 +713,19 @@ class ScriptGenerator:
             bonus = 1 if idx <= remainder else 0
             target = per_chunk + bonus
             topic = self._extract_topic(chunk)
+            category = ""
+            source_topic = ""
+            if idx <= len(source_plan):
+                source_section = dict(source_plan[idx - 1])
+                category = str(source_section.get("category", "")).strip()
+                source_topic = str(source_section.get("topic", "")).strip()
+                target = max(80, int(source_section.get("target_words", target) or target))
+            if source_topic:
+                topic = source_topic
             outline.append(
                 {
                     "chunk_idx": idx,
+                    "category": category,
                     "topic": topic,
                     "objective": (
                         "Introduce and expand this section with source-grounded precision, concrete examples, and smooth transitions"
@@ -1021,8 +1229,8 @@ class ScriptGenerator:
         *,
         lines_so_far: List[Dict[str, str]],
     ) -> List[Dict[str, str]]:
-        expanded = ensure_en_resumen(list(lines_so_far))
-        expanded = ensure_farewell_last(expanded)
+        expanded = ensure_recap_near_end(list(lines_so_far))
+        expanded = ensure_farewell_close(expanded)
         expanded = harden_script_structure(
             expanded,
             max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
@@ -1053,24 +1261,30 @@ class ScriptGenerator:
             return []
         templates_by_lang = {
             "es": (
-                "Antes de cerrar, añadimos un ejemplo practico que conecta decisiones tecnicas con resultados medibles para el equipo.",
-                "Con esto cerramos con una recomendacion final accionable para implementar los cambios de forma gradual y segura.",
+                "Vale, bajemos esto a tierra: que experimento pequeno haria el equipo esta semana para validar la idea sin riesgo?",
+                "Empezaria con una metrica clara, una prueba acotada y una decision predefinida segun el resultado.",
             ),
             "en": (
-                "Before closing, we add one practical example that links technical decisions with measurable outcomes for the team.",
-                "With that, we finish with one actionable recommendation to roll out changes gradually and safely.",
+                "Let's make this concrete: what small experiment should the team run this week to validate the idea safely?",
+                "Start with one clear metric, a scoped trial, and a predefined decision based on the result.",
             ),
             "pt": (
-                "Antes de encerrar, adicionamos um exemplo pratico que conecta decisoes tecnicas com resultados mensuraveis para a equipe.",
-                "Com isso, fechamos com uma recomendacao acionavel para aplicar mudancas de forma gradual e segura.",
+                "Vamos tornar isso concreto: qual experimento pequeno a equipe pode rodar nesta semana para validar a ideia com seguranca?",
+                "Comecaria com uma metrica clara, um teste limitado e uma decisao predefinida com base no resultado.",
             ),
             "fr": (
-                "Avant de conclure, nous ajoutons un exemple concret qui relie les decisions techniques a des resultats mesurables.",
-                "Ainsi, nous terminons avec une recommandation actionnable pour deployer les changements de facon progressive et sure.",
+                "Rendons cela concret : quel petit test l'equipe peut lancer cette semaine pour valider l'idee sans risque ?",
+                "Je commencerais par une metrique claire, un test limite et une decision predefinie selon le resultat.",
             ),
         }
         language = self._continuation_extension_language(lines_so_far=lines_so_far)
         templates = templates_by_lang.get(language, templates_by_lang["en"])
+        role_to_speaker: Dict[str, str] = {}
+        for line in reversed(lines_so_far):
+            role = str(line.get("role") or "").strip()
+            speaker = str(line.get("speaker") or "").strip()
+            if role in {"Host1", "Host2"} and speaker and role not in role_to_speaker:
+                role_to_speaker[role] = speaker
 
         expanded = list(lines_so_far)
         for idx, text in enumerate(templates, start=1):
@@ -1078,9 +1292,13 @@ class ScriptGenerator:
                 break
             previous = expanded[-1] if expanded else {}
             role = str(previous.get("role") or "").strip()
-            if role not in {"Host1", "Host2"}:
+            if role == "Host1":
+                role = "Host2"
+            elif role == "Host2":
+                role = "Host1"
+            else:
                 role = "Host1" if idx % 2 == 1 else "Host2"
-            speaker = str(previous.get("speaker") or "").strip() or role
+            speaker = role_to_speaker.get(role) or str(previous.get("speaker") or "").strip() or role
             instructions = str(previous.get("instructions") or "").strip()
             expanded.append(
                 {
@@ -1090,8 +1308,8 @@ class ScriptGenerator:
                     "text": text,
                 }
             )
-        expanded = ensure_en_resumen(expanded)
-        expanded = ensure_farewell_last(expanded)
+        expanded = ensure_recap_near_end(expanded)
+        expanded = ensure_farewell_close(expanded)
         expanded = harden_script_structure(
             expanded,
             max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
@@ -1257,6 +1475,7 @@ class ScriptGenerator:
             Keep spoken text in Spanish and instructions in English single-line format.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
             Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example, use "donante adicional" instead of "donor extra").
             Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
@@ -1277,9 +1496,10 @@ class ScriptGenerator:
             Avoid interview-like rhythm: combine questions with concise assertions and reactions.
             Add occasional respectful contrast between hosts instead of fully aligned monologues.
             Use occasional everyday analogies to make technical points easier to visualize.
-            You may include a short friendly joke/tease sparingly when natural, without breaking precision.
+            Light humor and respectful teasing are acceptable only when fully organic.
+            Never pre-announce tension with lines like "te voy a chinchar/pinchar", "te voy a provocar", or similar meta-intent phrasing.
             Do not leave open questions unresolved before the recap/farewell.
-            If a direct question appears near the ending, include an explicit answer in the next 1-2 turns before "En Resumen".
+            If a direct question appears near the ending, include an explicit answer in the next 1-2 turns before recap/farewell.
             In the final 3 turns before recap/farewell, avoid introducing new questions.
             Keep pre-recap turns declarative and conclusive (not interrogative).
             Keep the final recap concise and easy to hear; split dense recap content across two turns if needed.
@@ -1316,6 +1536,7 @@ class ScriptGenerator:
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Fix abrupt/incomplete ending and provide a coherent closing flow.
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
             Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example, use "donante adicional" instead of "donor extra").
             Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
@@ -1330,6 +1551,7 @@ class ScriptGenerator:
             Avoid flat turn-taking where both hosts only explain; add a brief challenge/probe before closing.
             Prefer at least one concrete analogy in the recovery lines when it helps clarity.
             If using humor, keep it brief, respectful, and context-relevant (never forced).
+            Light teasing is acceptable only if organic; never announce it explicitly with lines like "te voy a chinchar/pinchar".
             Do not jump from an open question directly into recap/farewell.
             If a question appears near the end, add an explicit counterpart answer before the mini recap.
             In the final 2-3 turns, do not add new questions; switch to concise declarative closure.
@@ -1722,6 +1944,9 @@ class ScriptGenerator:
                 self._source_agenda_topics = self._extract_source_agenda_topics(source)
                 if not self._source_agenda_topics:
                     self._source_agenda_topics = self._extract_source_agenda_topics(source_for_generation)
+                self._source_index_entries = self._extract_source_index_entries(source)
+                if not self._source_index_entries:
+                    self._source_index_entries = self._extract_source_index_entries(source_for_generation)
             finally:
                 phase_seconds["pre_summary"] = round(time.time() - pre_summary_started, 3)
             chunks = split_source_chunks(
@@ -1804,16 +2029,36 @@ class ScriptGenerator:
                         )
                         store.save(state)
                         if wc >= max_words and chunk_idx < (total_chunks - 1):
-                            # Hard stop when upper bound is already reached; avoid
-                            # over-generation that would later be trimmed/repaired.
+                            # Soft gate: avoid hard-stop when category coverage is
+                            # still too narrow in multi-topic runs.
+                            coverage_ratio = self._outline_category_coverage_ratio(
+                                outline=outline,
+                                chunks_done=chunk_idx + 1,
+                            )
+                            min_coverage_ratio = max(
+                                0.0,
+                                min(1.0, _env_float("SCRIPT_TOPIC_COVERAGE_MIN_RATIO", 0.85)),
+                            )
+                            if coverage_ratio >= min_coverage_ratio:
+                                self.logger.warn(
+                                    "chunk_generation_early_stop_max_words",
+                                    chunk=chunk_idx + 1,
+                                    word_count=wc,
+                                    max_words=max_words,
+                                    remaining_chunks=max(0, total_chunks - (chunk_idx + 1)),
+                                    category_coverage_ratio=round(float(coverage_ratio), 4),
+                                    category_coverage_min_ratio=round(float(min_coverage_ratio), 4),
+                                )
+                                break
                             self.logger.warn(
-                                "chunk_generation_early_stop_max_words",
+                                "chunk_generation_skip_early_stop_for_coverage",
                                 chunk=chunk_idx + 1,
                                 word_count=wc,
                                 max_words=max_words,
                                 remaining_chunks=max(0, total_chunks - (chunk_idx + 1)),
+                                category_coverage_ratio=round(float(coverage_ratio), 4),
+                                category_coverage_min_ratio=round(float(min_coverage_ratio), 4),
                             )
-                            break
                 finally:
                     phase_seconds["chunk_generation"] = round(time.time() - chunk_phase_started, 3)
 
@@ -1927,8 +2172,8 @@ class ScriptGenerator:
                                 fallback_event,
                                 error=str(exc),
                             )
-                            lines = ensure_en_resumen(lines)
-                            lines = ensure_farewell_last(lines)
+                            lines = ensure_recap_near_end(lines)
+                            lines = ensure_farewell_close(lines)
                             lines = harden_script_structure(
                                 lines,
                                 max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
@@ -1970,16 +2215,16 @@ class ScriptGenerator:
                     )
                 else:
                     completeness_before_repair = _default_completeness_report(reason="check_disabled")
-                lines = ensure_en_resumen(lines)
-                lines = ensure_farewell_last(lines)
+                lines = ensure_recap_near_end(lines)
+                lines = ensure_farewell_close(lines)
                 lines = harden_script_structure(
                     lines,
                     max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
                 )
                 # Run a final closing pass after structural hardening so the tail
                 # always ends with a complete mini-summary + farewell.
-                lines = ensure_en_resumen(lines)
-                lines = ensure_farewell_last(lines)
+                lines = ensure_recap_near_end(lines)
+                lines = ensure_farewell_close(lines)
                 if completeness_check_enabled:
                     completeness_after_repair = evaluate_script_completeness(lines)
                     if not bool(completeness_after_repair.get("pass", False)):
@@ -2044,6 +2289,21 @@ class ScriptGenerator:
                 "expected_tokens_per_chunk": self.config.expected_tokens_per_chunk,
                 "expected_tokens_per_chunk_effective": self._effective_expected_tokens_per_chunk(),
                 "source_validation_mode": self.config.source_validation_mode,
+                "source_index_entry_count": int(len(list(getattr(self, "_source_index_entries", [])))),
+                "outline_category_coverage_ratio": round(
+                    float(
+                        self._outline_category_coverage_ratio(
+                            outline=outline,
+                            chunks_done=int(state.get("chunks_done", 0)),
+                        )
+                    ),
+                    4,
+                ),
+                "outline_categories_planned": [
+                    str(section.get("category", "")).strip()
+                    for section in list(outline or [])
+                    if str(section.get("category", "")).strip()
+                ],
                 "script_retry_rate": round(
                     float(getattr(self.client, "script_retries_total", 0))
                     / float(max(1, getattr(self.client, "requests_made", 0))),

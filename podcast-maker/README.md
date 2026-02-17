@@ -90,10 +90,14 @@ Use only flags shown in each script `--help`.
 - profile defaults for LLM sampling in hybrid mode:
   - `short`: `SCRIPT_QUALITY_GATE_LLM_SAMPLE=0.5`
   - `standard`/`long`: `SCRIPT_QUALITY_GATE_LLM_SAMPLE=1.0`
-- semantic fallback for pattern-based rules (`summary_ok` / `closing_ok`) is enabled by default in all evaluators (`rules`/`hybrid`/`llm`), so language/wording changes do not rely on exact regex matches:
+- semantic fallback for pattern-based recap/closing rules (`summary_ok` / `closing_ok`) is enabled by default in all evaluators (`rules`/`hybrid`/`llm`), so language/wording changes do not rely on exact regex matches:
   - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=1`
   - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE=0.55`
   - `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES=10`
+- structural naturalness checks are enabled by default:
+  - `no_podcast_meta_language_ok` (blocks document-style narration like `segun el indice`/`siguiente tramo`)
+  - `no_declared_tease_intent_ok` (blocks explicit intent announcements like `te voy a chinchar/pinchar`)
+  - `line_length_ok`, `question_cadence_ok`, `transition_smoothness_ok`
 - when evaluation fails:
   - `enforce`: run exits with code `4`, no TTS call is made
   - `warn`: warning is logged and pipeline continues
@@ -109,6 +113,11 @@ Use only flags shown in each script `--help`.
   - monotonic persistence defaults:
     - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=1` (keep original if repaired candidate still fails)
     - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO=0.85` (reject repairs that shrink too much)
+  - source-aware balance checks are available at script stage (where source text exists):
+    - `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED=1`
+    - `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE=0.6`
+    - `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE=0.65`
+  - pre-audio gate (`make_podcast.py`) stays context-free by default (no source-side balance enforcement)
 
 Gate artifacts:
 
@@ -118,6 +127,16 @@ Gate artifacts:
 - audio-stage:
   - `<audio_checkpoint_dir>/<episode>/quality_report.json`
 - on success, `podcast_run_summary.json` includes `quality_gate_pass` and `quality_report_path`
+
+Before/after script-quality loop (baseline vs candidate) helper:
+
+```bash
+python3 ./scripts/evaluate_script_quality_loop.py \
+  --source /path/to/source.txt \
+  --baseline-dir /tmp/podcast_eval/baseline \
+  --candidate-dir /tmp/podcast_eval/candidate \
+  --out /tmp/podcast_eval/before_vs_after.json
+```
 
 Recommended preset for production strictness:
 
@@ -259,9 +278,16 @@ Common environment variables:
   - `SCRIPT_QUALITY_MIN_WORDS_RATIO`, `SCRIPT_QUALITY_MAX_WORDS_RATIO`
   - `SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER`
   - `SCRIPT_QUALITY_MAX_REPEAT_LINE_RATIO`
+  - `SCRIPT_QUALITY_MAX_TURN_WORDS`, `SCRIPT_QUALITY_MAX_LONG_TURN_COUNT`
+  - `SCRIPT_QUALITY_MAX_QUESTION_RATIO`, `SCRIPT_QUALITY_MAX_QUESTION_STREAK`
+  - `SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS`
+  - `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED`
+  - `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE`, `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE`
+  - `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS`
   - `SCRIPT_QUALITY_REQUIRE_SUMMARY`, `SCRIPT_QUALITY_REQUIRE_CLOSING`
   - `SCRIPT_QUALITY_MIN_OVERALL_SCORE`, `SCRIPT_QUALITY_MIN_CADENCE_SCORE`, `SCRIPT_QUALITY_MIN_LOGIC_SCORE`, `SCRIPT_QUALITY_MIN_CLARITY_SCORE`
   - `SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS` (default `1400`), `SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS`
+  - `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` (generator early-stop guard for multi-topic runs)
 - Audio orchestrated retries (entrypoint-level):
   - `AUDIO_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
   - `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)

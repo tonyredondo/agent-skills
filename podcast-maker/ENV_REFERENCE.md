@@ -67,6 +67,7 @@ If this file and code diverge, code is the source of truth and this file must be
 | `SCRIPT_SOURCE_VALIDATION_ENFORCE_RATIO` | profile policy | Default enforce threshold |
 | `SCRIPT_PRESUMMARY_PARALLEL` | `0` | Parallel pre-summary |
 | `SCRIPT_PRESUMMARY_PARALLEL_WORKERS` | `2` | Clamped `1..4` |
+| `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` | `0.75` | Prevents max-word early-stop when multi-topic coverage is still narrow |
 
 Profile source-validation defaults:
 
@@ -117,6 +118,15 @@ Profile source-validation defaults:
 | `SCRIPT_QUALITY_MAX_WORDS_RATIO` | `1.6` | Max words ratio |
 | `SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER` | profile default | Max same-speaker run |
 | `SCRIPT_QUALITY_MAX_REPEAT_LINE_RATIO` | profile default | Repetition threshold |
+| `SCRIPT_QUALITY_MAX_TURN_WORDS` | `58` | Line-length threshold per spoken turn |
+| `SCRIPT_QUALITY_MAX_LONG_TURN_COUNT` | `3` | Allowed turns above line-length threshold |
+| `SCRIPT_QUALITY_MAX_QUESTION_RATIO` | `0.45` | Maximum question-line ratio |
+| `SCRIPT_QUALITY_MAX_QUESTION_STREAK` | `2` | Max consecutive question turns |
+| `SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS` | `2` | Allowed abrupt transition count (for longer scripts) |
+| `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED` | `1` | Enables source-aware topic balance check (script-stage) |
+| `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE` | `0.6` | Minimum covered source-category ratio |
+| `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE` | `0.65` | Maximum concentration allowed in one source category |
+| `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS` | `4` | Minimum lexical overlap hits to mark source-balance as applicable |
 | `SCRIPT_QUALITY_REQUIRE_SUMMARY` | `1` | Require summary signal |
 | `SCRIPT_QUALITY_REQUIRE_CLOSING` | `1` | Require closing signal |
 | `SCRIPT_QUALITY_MIN_OVERALL_SCORE` | profile default | LLM score guard |

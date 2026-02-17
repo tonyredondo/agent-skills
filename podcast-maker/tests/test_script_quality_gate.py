@@ -961,7 +961,7 @@ class ScriptQualityGateTests(unittest.TestCase):
         self.assertEqual(int(outcome["report"]["repair_attempts_used"]), 0)
         repaired_lines = list(outcome["payload"].get("lines", []))
         repaired_text = "\n".join(line.get("text", "") for line in repaired_lines)
-        self.assertIn("En Resumen", repaired_text)
+        self.assertIn("Nos quedamos con", repaired_text)
         self.assertIn("Gracias por escuch", repaired_text)
 
     def test_attempt_script_quality_repair_deterministically_fixes_speaker_runs(self) -> None:
