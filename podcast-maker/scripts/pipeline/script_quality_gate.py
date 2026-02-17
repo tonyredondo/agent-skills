@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Script quality evaluation and repair utilities.
+
+The gate combines deterministic structural checks with optional LLM scoring and
+supports auto-repair flows used by script and pre-audio stages.
+"""
+
 import json
 import math
 import os
@@ -112,10 +118,12 @@ QUESTION_PUNCT_RE = re.compile(r"[¿?]")
 
 
 def _clamp(value: float, low: float, high: float) -> float:
+    """Clamp a float to inclusive range."""
     return max(low, min(high, value))
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -126,6 +134,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 class ScriptQualityGateError(RuntimeError):
+    """Raised when quality gate runs in enforce mode and rejects script."""
+
     def __init__(self, message: str, *, report: Dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.failure_kind = ERROR_KIND_SCRIPT_QUALITY
@@ -439,6 +449,7 @@ def evaluate_script_quality(
     client: OpenAIClient | None = None,
     logger: Logger | None = None,
 ) -> Dict[str, Any]:
+    """Evaluate script quality and return normalized decision report."""
     started = time.time()
     raw_lines = list(validated_payload.get("lines", []))
     lines = harden_script_structure(
@@ -482,6 +493,8 @@ def evaluate_script_quality(
         need_summary = bool(quality_cfg.require_summary and not rules.get("summary_ok", True))
         need_closing = bool(quality_cfg.require_closing and not rules.get("closing_ok", True))
         if need_summary or need_closing:
+            # Semantic fallback lets the evaluator confirm intent (summary/closing)
+            # when lexical token checks are too strict.
             semantic_info["called"] = True
             if client is None or not hasattr(client, "generate_freeform_text"):
                 semantic_info["skipped_reason"] = "semantic_client_unavailable"
@@ -516,6 +529,8 @@ def evaluate_script_quality(
                     semantic_info["confidence_gate_passed"] = confidence_gate_passed
                     semantic_info["evidence"] = evidence
                     if confidence_gate_passed:
+                        # Promote semantic signals into deterministic rules only
+                        # when confidence threshold is satisfied.
                         used = False
                         if need_summary and summary_semantic:
                             rules["summary_ok"] = True
@@ -552,6 +567,8 @@ def evaluate_script_quality(
     if quality_cfg.evaluator in {"llm", "hybrid"}:
         llm_sampled = quality_cfg.evaluator == "llm" or (rules_pass and _should_sample_llm(lines, quality_cfg.llm_sample_rate))
         if llm_sampled:
+            # LLM evaluator contributes editorial quality signals that
+            # complement deterministic structural checks.
             llm_called = True
             if client is None:
                 reasons_llm.append("llm_client_unavailable")
@@ -628,6 +645,7 @@ def evaluate_script_quality(
         and critical_score_failed
     )
     hard_fail_eligible = bool(structural_fail or score_hard_fail_eligible)
+    # Rollout switch: in full mode, LLM editorial failures can hard-fail too.
     if not structural_only_rollout and llm_editorial_fail and not llm_error:
         hard_fail_eligible = True
     final_pass = not hard_fail_eligible
@@ -725,6 +743,7 @@ def evaluate_script_quality(
 
 
 def write_quality_report(path: str, report: Dict[str, Any]) -> None:
+    """Persist quality report atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -743,6 +762,7 @@ def _with_repair_metadata(
     attempts_used: int,
     history: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """Attach repair attempt metadata to a quality report payload."""
     out = dict(report)
     out["initial_pass"] = bool(initial_pass)
     out["repair_attempted"] = bool(attempted)
@@ -760,6 +780,7 @@ def _build_repair_prompt(
     script_cfg: ScriptConfig,
     quality_cfg: ScriptQualityGateConfig,
 ) -> str:
+    """Build repair prompt from report reasons + bounded payload snapshot."""
     reasons = report.get("reasons", [])
     reason_lines: List[str] = []
     if isinstance(reasons, list):
@@ -819,6 +840,7 @@ def _deterministic_repair_payload(
     *,
     quality_cfg: ScriptQualityGateConfig,
 ) -> Dict[str, List[Dict[str, str]]]:
+    """Apply deterministic structure fixes before any LLM repair."""
     base_lines = list(payload.get("lines", []))
     lines = ensure_en_resumen(base_lines)
     lines = ensure_farewell_last(lines)
@@ -834,6 +856,7 @@ def _repair_output_token_budget(
     payload: Dict[str, List[Dict[str, str]]],
     quality_cfg: ScriptQualityGateConfig,
 ) -> int:
+    """Estimate repair token budget from JSON payload size."""
     compact = canonical_json(payload)
     # Heuristic: JSON-heavy payloads need higher output budget than plain word count.
     approx_needed = int(math.ceil(float(len(compact)) / 3.5)) + 160
@@ -861,6 +884,7 @@ def attempt_script_quality_repair(
     total_timeout_seconds: float | None = None,
     attempt_timeout_seconds: int | None = None,
 ) -> Dict[str, Any]:
+    """Attempt deterministic and LLM-based repair for failed gate reports."""
     initial_pass = bool(initial_report.get("pass", False))
     history: List[Dict[str, Any]] = []
     validated_input_payload = validate_script_payload(validated_payload)
@@ -909,6 +933,7 @@ def attempt_script_quality_repair(
         }
 
     if not hard_fail_eligible:
+        # Skip repair when policy classifies the failure as warn-only.
         history.append({"attempt": 0, "status": "skipped", "reason": "hard_fail_not_eligible"})
         return {
             "payload": current_payload,
@@ -946,6 +971,7 @@ def attempt_script_quality_repair(
     )
     deterministic_hash = content_hash(canonical_json(deterministic_payload))
     if deterministic_hash != initial_hash:
+        # First, try deterministic repair to avoid unnecessary LLM calls.
         if _stage_timed_out():
             history.append({"attempt": 0, "status": "timeout", "reason": "quality_repair_timeout"})
             current_report = dict(current_report)
@@ -1005,6 +1031,8 @@ def attempt_script_quality_repair(
                 "repaired": changed,
             }
         if not quality_cfg.repair_revert_on_fail:
+            # Optional mode keeps best-effort deterministic edits even when
+            # they still do not pass the gate.
             current_payload = deterministic_payload
             current_report = deterministic_report
 
@@ -1060,6 +1088,8 @@ def attempt_script_quality_repair(
             quality_cfg=quality_cfg,
         )
         try:
+            # LLM repair attempt: strict schema response plus optional timeout
+            # override for bounded stage latency.
             call_kwargs: Dict[str, Any] = {
                 "prompt": prompt,
                 "schema": SCRIPT_JSON_SCHEMA,
@@ -1101,6 +1131,7 @@ def attempt_script_quality_repair(
                 int(round(float(initial_word_count) * float(quality_cfg.repair_min_word_ratio))),
             )
             if candidate_word_count < min_allowed_after_repair:
+                # Guardrail prevents repairs that "pass" by collapsing content.
                 history.append(
                     {
                         "attempt": attempt,
@@ -1127,6 +1158,7 @@ def attempt_script_quality_repair(
                 }
             )
             if bool(candidate_report.get("pass", False)):
+                # Stop at first candidate that passes the gate.
                 final_hash = content_hash(canonical_json(candidate_payload))
                 changed = final_hash != initial_hash
                 return {
@@ -1143,6 +1175,7 @@ def attempt_script_quality_repair(
                     "repaired": changed,
                 }
             if not quality_cfg.repair_revert_on_fail:
+                # In non-revert mode, continue iterations from latest candidate.
                 current_payload = candidate_payload
                 current_report = candidate_report
         except Exception as exc:  # noqa: BLE001

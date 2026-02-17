@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""CLI entrypoint for audio synthesis and final mix generation.
+
+This stage consumes a validated script JSON, runs optional pre-audio quality
+checks, synthesizes TTS segments with checkpoint-aware retry logic, and then
+produces either the full mixed output or a raw-only fallback.
+"""
+
 import argparse
 import dataclasses
 import json
@@ -55,6 +62,7 @@ from pipeline.tts_synthesizer import TTSSynthesizer
 
 
 def _basename_arg(value: str) -> str:
+    """Validate output basename (plain filename token only)."""
     name = str(value).strip()
     if not name:
         raise argparse.ArgumentTypeError("basename must not be empty")
@@ -70,6 +78,7 @@ def _basename_arg(value: str) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the audio stage."""
     parser = argparse.ArgumentParser(
         description="Generate podcast audio from script JSON with resume and checkpoints."
     )
@@ -97,6 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
+    """Read boolean env var with a default fallback."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -104,6 +114,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with a default fallback."""
     value = os.environ.get(name)
     if value is None or str(value).strip() == "":
         return default
@@ -114,6 +125,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _recoverable_audio_failure_kinds() -> set[str]:
+    """Resolve failure kinds that qualify for orchestrated audio retries."""
     raw = str(
         os.environ.get(
             "AUDIO_ORCHESTRATED_RETRY_FAILURE_KINDS",
@@ -149,6 +161,7 @@ def _recoverable_audio_failure_kinds() -> set[str]:
 
 
 def _classify_audio_failure_kind(exc: BaseException) -> str:
+    """Map runtime exceptions to normalized audio failure kinds."""
     if isinstance(exc, TTSBatchError):
         return str(exc.primary_kind or ERROR_KIND_UNKNOWN).strip().lower() or ERROR_KIND_UNKNOWN
     if isinstance(exc, TTSOperationError):
@@ -174,6 +187,7 @@ def _classify_audio_failure_kind(exc: BaseException) -> str:
 
 
 def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
+    """Concatenate segment MP3 bytes as a last-resort raw output path."""
     tmp = f"{output_path}.tmp"
     try:
         with open(tmp, "wb") as out:
@@ -192,6 +206,7 @@ def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
 
 
 def _write_podcast_run_summary(path: str, payload: dict[str, object]) -> None:
+    """Persist podcast run summary atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     try:
@@ -209,6 +224,7 @@ def _write_podcast_run_summary(path: str, payload: dict[str, object]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run pre-audio checks, TTS synthesis, mixing, and stage reporting."""
     args = parse_args(argv)
     started = time.time()
     run_token = str(getattr(args, "run_token", "") or "").strip()
@@ -282,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
         else:
             run_manifest_initialized = True
+            # Guardrail: ensure the provided script belongs to the same run
+            # context already recorded in manifest (when available).
             manifest_episode = str(prior_manifest.get("episode_id", "")).strip()
             if manifest_episode and manifest_episode != episode_id:
                 manifest_mismatch_error = ScriptOperationError(
@@ -388,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if manifest_mismatch_error is not None:
             raise manifest_mismatch_error
+        # Validate and normalize script structure before any audio work starts.
         with open(args.script_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         validated = validate_script_payload(payload)
@@ -416,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         normalized_script_path = os.path.join(audio_run_dir, "normalized_script.json")
         try:
+            # Persist normalized script snapshot to make debugging audio outputs
+            # independent of the original script file lifecycle.
             _write_podcast_run_summary(
                 normalized_script_path,
                 {"lines": list(validated.get("lines", []))},
@@ -447,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         if validated is None:
             raise RuntimeError("Input script validation failed")
         os.makedirs(args.outdir, exist_ok=True)
+        # Housekeeping before synthesis keeps checkpoint growth bounded.
         ensure_min_free_disk(args.outdir, reliability.min_free_disk_mb)
         report = cleanup_dir(
             base_dir=audio_cfg.checkpoint_dir,
@@ -481,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         quality_gate_executed = bool(quality_cfg.enabled)
         script_gate_action_effective = str(quality_cfg.action)
         if quality_cfg.enabled:
+            # This is the pre-audio quality gate. In enforce mode it blocks TTS.
             os.makedirs(audio_run_dir, exist_ok=True)
             quality_report_path = os.path.join(audio_run_dir, "quality_report.json")
             quality_eval_started = time.time()
@@ -578,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 mix_started = time.time()
                 if mixer_available:
+                    # Preferred path: concat + loudnorm + EQ.
                     mix_result = mixer.mix(
                         segment_files=tts_result.segment_files,
                         outdir=args.outdir,
@@ -588,6 +612,8 @@ def main(argv: list[str] | None = None) -> int:
                     norm_path = mix_result.norm_path
                     output_mode = "full_pipeline"
                 else:
+                    # Degraded path when ffmpeg is unavailable and raw-only mode
+                    # is explicitly allowed.
                     raw_only = os.path.join(args.outdir, f"{args.basename}_raw_only.mp3")
                     final_path = _write_raw_only_mp3(tts_result.segment_files, raw_only)
                     raw_path = final_path
@@ -609,6 +635,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if not should_retry:
                     raise
+                # Retry by resuming from checkpoints and forcing unlock to
+                # recover transient partial states.
                 audio_orchestrated_retry_events.append(
                     {
                         "attempt": audio_attempt,
@@ -784,6 +812,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         elapsed = time.time() - started
         if not run_summary_written:
+            # Guarantee a run summary artifact even on early failures so
+            # operators can diagnose failures without reproducing locally.
             fallback_summary: dict[str, object] = {
                 "component": "make_podcast",
                 "episode_id": episode_id,
@@ -874,6 +904,7 @@ def main(argv: list[str] | None = None) -> int:
                     error=str(exc),
                 )
         try:
+            # SLO accounting is best-effort and must not mask primary errors.
             cost_error_pct = 0.0
             retry_rate_value = float(retry_rate) if isinstance(retry_rate, (int, float)) else 0.0
             actual_cost_raw = os.environ.get("ACTUAL_COST_USD", "").strip()

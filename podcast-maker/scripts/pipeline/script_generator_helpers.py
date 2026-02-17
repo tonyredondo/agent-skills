@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Helper utilities extracted from `script_generator`.
+
+These helpers are intentionally side-effect light and easy to test in
+isolation, while keeping the main generator module focused on orchestration.
+"""
+
 import math
 import os
 from typing import Any, Dict, List
@@ -8,6 +14,7 @@ from .script_chunker import context_tail
 
 
 def atomic_write_text(path: str, value: str) -> None:
+    """Write text atomically, always ending file with a newline."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -18,6 +25,7 @@ def atomic_write_text(path: str, value: str) -> None:
 
 
 def phase_seconds_with_generation(phase_seconds: Dict[str, float]) -> Dict[str, float]:
+    """Normalize phase timings and add aggregate `generation` duration."""
     out: Dict[str, float] = {}
     for key, value in phase_seconds.items():
         try:
@@ -36,6 +44,7 @@ def phase_seconds_with_generation(phase_seconds: Dict[str, float]) -> Dict[str, 
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """Read boolean env vars using common truthy values."""
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -43,6 +52,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def env_float(name: str, default: float) -> float:
+    """Read finite float env vars with defensive fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -56,6 +66,7 @@ def env_float(name: str, default: float) -> float:
 
 
 def env_int(name: str, default: int) -> int:
+    """Read integer env vars with defensive fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -66,6 +77,7 @@ def env_int(name: str, default: int) -> int:
 
 
 def sum_int_maps(*maps: Dict[str, int]) -> Dict[str, int]:
+    """Merge integer maps by summing values per normalized key."""
     out: Dict[str, int] = {}
     for payload in maps:
         for key, value in dict(payload or {}).items():
@@ -77,6 +89,7 @@ def sum_int_maps(*maps: Dict[str, int]) -> Dict[str, int]:
 
 
 def default_completeness_report(*, reason: str = "") -> Dict[str, object]:
+    """Return a baseline completeness report payload."""
     reasons: List[str] = []
     if reason:
         reasons.append(str(reason))
@@ -89,6 +102,7 @@ def default_completeness_report(*, reason: str = "") -> Dict[str, object]:
 
 
 def recent_dialogue(lines: List[Dict[str, str]], max_lines: int) -> str:
+    """Format the latest dialogue turns for prompt context windows."""
     tail = context_tail(lines, max_lines)
     rows: List[str] = []
     for line in tail:
@@ -97,6 +111,7 @@ def recent_dialogue(lines: List[Dict[str, str]], max_lines: int) -> str:
 
 
 def migrate_checkpoint_lines(raw_lines: Any) -> List[Dict[str, str]]:
+    """Migrate legacy checkpoint line structures to canonical schema."""
     if not isinstance(raw_lines, list):
         return []
     migrated: List[Dict[str, str]] = []

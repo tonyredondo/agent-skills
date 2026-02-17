@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Configuration loader for script quality gate behavior.
+
+This module centralizes environment parsing and default profiles so gate logic
+can remain focused on evaluation instead of configuration plumbing.
+"""
+
 import math
 import os
 from dataclasses import dataclass
@@ -10,11 +16,13 @@ SUPPORTED_GATE_PROFILES = {"default", "production_strict"}
 
 
 def _env_str(name: str, default: str) -> str:
+    """Read string env var with trim + fallback."""
     raw = os.environ.get(name)
     return default if raw is None else str(raw).strip()
 
 
 def _env_bool(name: str, default: bool) -> bool:
+    """Read bool env var from common truthy string values."""
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -22,6 +30,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with safe fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -32,6 +41,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
+    """Read finite float env var with safe fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -45,10 +55,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _clamp(value: float, low: float, high: float) -> float:
+    """Clamp numeric value to an inclusive range."""
     return max(low, min(high, value))
 
 
 def _profile_default_sample_rate(profile_name: str) -> float:
+    """Return default LLM sampling ratio for profile."""
     normalized = str(profile_name or "standard").strip().lower()
     if normalized == "short":
         return 0.5
@@ -56,19 +68,24 @@ def _profile_default_sample_rate(profile_name: str) -> float:
 
 
 def hard_fail_structural_only_enabled() -> bool:
+    """Feature flag for structural-only hard-fail rollout."""
     return _env_bool("SCRIPT_QUALITY_GATE_HARD_FAIL_STRUCTURAL_ONLY", True)
 
 
 def strict_score_blocking_enabled() -> bool:
+    """Feature flag for critical-score-based blocking."""
     return _env_bool("SCRIPT_QUALITY_GATE_STRICT_SCORE_BLOCKING", False)
 
 
 def critical_score_threshold() -> float:
+    """Threshold used when strict score blocking is enabled."""
     return _clamp(_env_float("SCRIPT_QUALITY_GATE_CRITICAL_SCORE_THRESHOLD", 2.5), 0.0, 5.0)
 
 
 @dataclass(frozen=True)
 class ScriptQualityGateConfig:
+    """Immutable runtime config for script quality evaluation/repair."""
+
     action: str
     evaluator: str
     llm_sample_rate: float
@@ -97,6 +114,7 @@ class ScriptQualityGateConfig:
 
     @staticmethod
     def from_env(*, profile_name: str) -> "ScriptQualityGateConfig":
+        """Build gate config from environment and profile defaults."""
         gate_profile = _env_str("SCRIPT_QUALITY_GATE_PROFILE", "default").lower()
         if gate_profile not in SUPPORTED_GATE_PROFILES:
             gate_profile = "default"
@@ -184,4 +202,5 @@ class ScriptQualityGateConfig:
 
     @property
     def enabled(self) -> bool:
+        """Whether quality gate should execute for this stage."""
         return self.action in {"warn", "enforce"}

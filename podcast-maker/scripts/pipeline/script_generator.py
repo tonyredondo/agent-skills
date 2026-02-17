@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Script generation engine for the podcast pipeline.
+
+The generator converts source text into structured Host1/Host2 dialogue using
+chunked prompting, schema-aware recovery, checkpoint resume, and deterministic
+post-processing safeguards.
+"""
+
 import json
 import math
 import os
@@ -83,6 +90,8 @@ SOURCE_INDEX_ITEM_RE = re.compile(
 
 @dataclass
 class ScriptGenerationResult:
+    """Final artifact pointers and key script-stage metrics."""
+
     episode_id: str
     output_path: str
     line_count: int
@@ -96,6 +105,8 @@ class ScriptGenerationResult:
 
 @dataclass
 class ScriptGenerator:
+    """Stateful script generation coordinator with recovery ladders."""
+
     config: ScriptConfig
     reliability: ReliabilityConfig
     logger: Logger
@@ -140,6 +151,7 @@ class ScriptGenerator:
         return float(truncation_failures) / float(script_requests)
 
     def _adaptive_token_budget(self, *, base_tokens: int, stage: str) -> int:
+        """Scale token budgets up/down when truncation pressure increases."""
         budget = max(128, int(base_tokens))
         if not _env_bool("SCRIPT_TRUNCATION_PRESSURE_ADAPTIVE", True):
             return budget
@@ -376,6 +388,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> str:
+        """Build a chunk prompt with continuity and target-size guidance."""
         recent = _recent_dialogue(lines_so_far, self.config.max_context_lines)
         current_words = count_words_from_lines(lines_so_far)
         remaining_to_min = max(0, min_words - current_words)
@@ -759,6 +772,7 @@ class ScriptGenerator:
         max_words: int,
         max_output_tokens: int,
     ) -> List[Dict[str, str]]:
+        """Generate one chunk, falling back to adaptive split recovery when needed."""
         stage = f"chunk_{chunk_idx}"
         adaptive_tokens = self._adaptive_token_budget(base_tokens=max_output_tokens, stage=stage)
         if _env_bool("SCRIPT_TRUNCATION_PRESSURE_ADAPTIVE", True):
@@ -1090,6 +1104,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> List[Dict[str, str]]:
+        """Generate continuation lines with targeted recovery on parse failures."""
         continuation_stage = f"continuation_{continuation_round}"
         continuation_tokens = self._adaptive_token_budget(
             base_tokens=self.config.max_output_tokens_continuation,
@@ -1377,6 +1392,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> Dict[str, Any]:
+        """Evaluate source sufficiency for requested target duration."""
         target_word_count = max(min_words, int((min_words + max_words) / 2))
         source_to_target_ratio = float(source_word_count) / float(max(1, target_word_count))
         recommended_min_words = max(
@@ -1451,6 +1467,7 @@ class ScriptGenerator:
         resume_force: bool,
         cancel_check: Optional[Callable[[], bool]],
     ) -> str:
+        """Resolve source text used for generation, including pre-summary cache."""
         cached = str(state.get("generation_source", "")).strip()
         if cached:
             return cached
@@ -1479,6 +1496,7 @@ class ScriptGenerator:
         resume: bool,
         resume_force: bool,
     ) -> Dict[str, Any]:
+        """Load resume state or initialize a fresh checkpoint state."""
         existing = store.load()
         if resume:
             if existing is None:
@@ -1552,6 +1570,7 @@ class ScriptGenerator:
         cancel_check: Optional[Callable[[], bool]] = None,
         run_token: Optional[str] = None,
     ) -> ScriptGenerationResult:
+        """Generate final script JSON with checkpointing and resilience controls."""
         source = source_text.strip()
         if not source:
             raise RuntimeError("Input source is empty. Provide enough content to build a podcast.")
@@ -1603,6 +1622,7 @@ class ScriptGenerator:
         completeness_after_repair: Dict[str, object] = _default_completeness_report()
 
         try:
+            # Reset per-run counters so resumes/retries report clean deltas.
             self._schema_validation_failures = 0
             self._schema_repair_successes = 0
             self._schema_repair_failures = 0
@@ -1646,6 +1666,7 @@ class ScriptGenerator:
                 resume=resume,
                 resume_force=resume_force,
             )
+            # Validate source suitability before spending API budget.
             source_validation = self._validate_source_length(
                 source_word_count=source_word_count,
                 min_words=min_words,
@@ -1680,6 +1701,7 @@ class ScriptGenerator:
             pre_summary_started = time.time()
             self._last_stage = "pre_summary"
             try:
+                # Source may be pre-summarized/cached to stabilize long inputs.
                 source_for_generation = self._resolve_generation_source(
                     source=source,
                     state=state,
@@ -1774,6 +1796,8 @@ class ScriptGenerator:
                         )
                         store.save(state)
                         if wc >= max_words and chunk_idx < (total_chunks - 1):
+                            # Hard stop when upper bound is already reached; avoid
+                            # over-generation that would later be trimmed/repaired.
                             self.logger.warn(
                                 "chunk_generation_early_stop_max_words",
                                 chunk=chunk_idx + 1,
@@ -1821,6 +1845,7 @@ class ScriptGenerator:
                         else:
                             no_progress_rounds = 0
                         if no_progress_rounds >= self.config.no_progress_rounds:
+                            # Safety brake for "alive but not progressing" loops.
                             self._no_progress_abort = True
                             raise RuntimeError(
                                 "No progress while expanding script. Aborting to avoid long hang."
@@ -1843,6 +1868,8 @@ class ScriptGenerator:
                 self._last_stage = "truncation_recovery"
                 try:
                     if self._looks_truncated(lines):
+                        # Final-tail recovery runs once after chunking/continuations
+                        # if deterministic heuristics still detect truncation.
                         prev_wc = count_words_from_lines(lines)
                         self.logger.warn(
                             "script_truncation_detected",
@@ -1871,6 +1898,8 @@ class ScriptGenerator:
                             invalid_schema_error = self._is_invalid_schema_error(exc)
                             if not empty_output_error and not invalid_schema_error:
                                 raise
+                            # Preserve partial output with deterministic closure when
+                            # recovery call fails due to empty/schema issues.
                             self._truncation_recovery_fallback_used = True
                             fallback_mode = (
                                 "empty_output_preserve_partial"
@@ -1920,6 +1949,7 @@ class ScriptGenerator:
             postprocess_started = time.time()
             self._last_stage = "postprocess"
             try:
+                # Final deterministic hardening pass before writing output.
                 lines = harden_script_structure(
                     lines,
                     max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
@@ -2123,6 +2153,7 @@ class ScriptGenerator:
                 ),
             }
             run_summary.update(source_validation)
+            # Persist rich telemetry for debugging and orchestrated retries.
             _atomic_write_text(run_summary_path, json.dumps(run_summary, indent=2, ensure_ascii=False))
             self.logger.info("script_generation_done", output_path=output_path, word_count=final_wc)
             return ScriptGenerationResult(

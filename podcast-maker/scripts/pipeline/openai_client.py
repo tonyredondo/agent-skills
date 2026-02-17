@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""OpenAI transport and resilience layer for script/TTS requests.
+
+This module centralizes:
+- request budgeting and coarse cost tracking,
+- retry/backoff/circuit-breaker behavior,
+- script JSON parse classification + repair attempts.
+"""
+
 import json
 import math
 import os
@@ -18,6 +26,7 @@ from .logging_utils import Logger
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with defensive fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -28,6 +37,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
+    """Read finite float env var with defensive fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -41,6 +51,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _clamp_tts_speed(value: Any, *, fallback: float = 1.0) -> float:
+    """Clamp TTS speed to API-supported range."""
     try:
         parsed = float(value)
         if not math.isfinite(parsed):
@@ -53,6 +64,7 @@ def _clamp_tts_speed(value: Any, *, fallback: float = 1.0) -> float:
 
 
 def _resolve_openai_api_key() -> str:
+    """Resolve API key from env first, then local auth file."""
     env_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if env_api_key:
         return env_api_key
@@ -72,6 +84,7 @@ def _resolve_openai_api_key() -> str:
 
 
 def _resolve_script_reasoning_effort() -> str:
+    """Resolve reasoning effort level for script requests."""
     effort = str(os.environ.get("SCRIPT_REASONING_EFFORT", "low") or "").strip().lower()
     if effort in {"low", "medium", "high"}:
         return effort
@@ -79,6 +92,7 @@ def _resolve_script_reasoning_effort() -> str:
 
 
 def _extract_text_from_responses_payload(payload: Dict[str, Any]) -> str:
+    """Extract output text from Responses API payload variants."""
     text = ""
     for item in payload.get("output", []):
         if not isinstance(item, dict):
@@ -98,6 +112,7 @@ PARSE_FAILURE_EMPTY_OUTPUT = "empty_output"
 
 
 def _extract_json_object_candidate(raw_text: str) -> tuple[str, bool, bool]:
+    """Extract best JSON-object candidate and wrapper/truncation hints."""
     text = str(raw_text or "").strip()
     if not text:
         return "", False, False
@@ -115,6 +130,7 @@ def _extract_json_object_candidate(raw_text: str) -> tuple[str, bool, bool]:
 
 
 def _looks_like_truncated_json(*, raw_text: str, parse_error: str) -> bool:
+    """Heuristic detection for truncated JSON responses."""
     text = str(raw_text or "").strip()
     if not text:
         return False
@@ -139,6 +155,7 @@ def _classify_json_parse_failure(
     wrapper_hint: bool,
     incomplete_object_hint: bool,
 ) -> str:
+    """Classify parse failures to drive targeted repair policy."""
     if not str(raw_text or "").strip():
         return PARSE_FAILURE_EMPTY_OUTPUT
     if incomplete_object_hint or _looks_like_truncated_json(raw_text=raw_text, parse_error=parse_error):
@@ -149,6 +166,7 @@ def _classify_json_parse_failure(
 
 
 def _parse_repair_budget(*, base_tokens: int, attempt: int, parse_failure_kind: str) -> int:
+    """Compute adaptive token budget for parse repair attempts."""
     base = max(64, int(base_tokens))
     kind = str(parse_failure_kind or "").strip().lower()
     if kind == PARSE_FAILURE_EMPTY_OUTPUT:
@@ -192,6 +210,7 @@ def _build_parse_repair_input(
     parse_failure_kind: str,
     max_input_chars: int,
 ) -> str:
+    """Prepare bounded invalid content input for repair prompts."""
     kind = str(parse_failure_kind or "").strip().lower()
     candidate = str(extracted_candidate or raw_text or "")
     if kind == PARSE_FAILURE_TRUNCATION:
@@ -210,6 +229,8 @@ def _build_parse_repair_input(
 
 @dataclass
 class OpenAIClient:
+    """Thin client wrapper with retry/budget/telemetry semantics."""
+
     api_key: str
     logger: Logger
     reliability: ReliabilityConfig
@@ -260,6 +281,7 @@ class OpenAIClient:
         tts_backoff_base_ms: int,
         tts_backoff_max_ms: int,
     ) -> "OpenAIClient":
+        """Factory that resolves credentials and initializes runtime config."""
         api_key = _resolve_openai_api_key()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required (env or ~/.codex/auth.json)")
@@ -280,12 +302,14 @@ class OpenAIClient:
         )
 
     def _check_budget(self) -> None:
+        """Enforce run-level request/cost limits."""
         if self.reliability.max_requests_per_run > 0 and self.requests_made >= self.reliability.max_requests_per_run:
             raise RuntimeError("Request budget reached (MAX_REQUESTS_PER_RUN)")
         if self.reliability.max_estimated_cost_usd > 0 and self.estimated_cost_usd >= self.reliability.max_estimated_cost_usd:
             raise RuntimeError("Estimated cost budget reached (MAX_ESTIMATED_COST_USD)")
 
     def _track_usage(self, *, request_kind: str) -> None:
+        """Track request counters and coarse estimated cost."""
         self.requests_made += 1
         if request_kind == "script":
             self.script_requests_made += 1
@@ -298,6 +322,7 @@ class OpenAIClient:
             self.estimated_cost_usd += max(0.0, _env_float("ESTIMATED_COST_PER_TTS_REQUEST_USD", 0.01))
 
     def _reserve_request_slot(self, *, request_kind: str) -> None:
+        """Atomically enforce budget then reserve one request slot."""
         with self._state_lock:
             self._check_budget()
             self._track_usage(request_kind=request_kind)
@@ -312,6 +337,7 @@ class OpenAIClient:
         request_kind: str,
         stage: str,
     ) -> Dict[str, Any]:
+        """POST JSON with retry/backoff and structured logging."""
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             endpoint,
@@ -407,6 +433,7 @@ class OpenAIClient:
         raise RuntimeError(f"OpenAI request failed for stage={stage}")
 
     def _record_script_parse_failure(self, *, stage: str, parse_failure_kind: str) -> None:
+        """Track script JSON parse failures by stage and kind."""
         with self._state_lock:
             self.script_json_parse_failures += 1
             self.script_json_parse_failures_by_stage[stage] = int(
@@ -426,6 +453,7 @@ class OpenAIClient:
         timeout_seconds: int,
         retries: int,
     ) -> str:
+        """Retry script call with reduced budget when output is empty."""
         with self._state_lock:
             self.script_empty_output_events += 1
             self.script_empty_output_by_stage[stage] = int(self.script_empty_output_by_stage.get(stage, 0)) + 1
@@ -471,6 +499,7 @@ class OpenAIClient:
         schema: Dict[str, Any],
         max_output_tokens: int,
     ) -> Dict[str, Any]:
+        """Build Responses API payload for structured script generation."""
         return {
             "model": self.script_model,
             "input": [
@@ -502,6 +531,7 @@ class OpenAIClient:
         prompt: str,
         max_output_tokens: int,
     ) -> Dict[str, Any]:
+        """Build Responses API payload for free-form text requests."""
         return {
             "model": self.script_model,
             "input": [
@@ -523,6 +553,7 @@ class OpenAIClient:
         stage: str,
         timeout_seconds_override: Optional[int] = None,
     ) -> str:
+        """Generate plain text output for evaluators and helper prompts."""
         payload = self._script_freeform_payload(prompt=prompt, max_output_tokens=max_output_tokens)
         request_timeout = (
             max(1, int(timeout_seconds_override))
@@ -551,6 +582,7 @@ class OpenAIClient:
         stage: str,
         timeout_seconds_override: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """Generate schema-aligned script JSON with parse repair fallback."""
         payload = self._script_json_payload(prompt=prompt, schema=schema, max_output_tokens=max_output_tokens)
         request_timeout = (
             max(1, int(timeout_seconds_override))
@@ -586,6 +618,8 @@ class OpenAIClient:
             raise ValueError("root_json_value_is_not_object")
         except Exception as exc:  # noqa: BLE001
             parse_exc: BaseException = exc
+            # First recovery path: extract object when model wraps JSON with
+            # prose/markdown but object itself is still parseable.
             extracted_candidate, wrapper_hint, incomplete_object_hint = _extract_json_object_candidate(text)
             if extracted_candidate and (wrapper_hint or extracted_candidate != text):
                 try:
@@ -620,6 +654,8 @@ class OpenAIClient:
             repair_attempts_base = max(0, _env_int("SCRIPT_PARSE_REPAIR_ATTEMPTS", 2))
             truncation_bonus_attempts = max(0, _env_int("SCRIPT_PARSE_REPAIR_TRUNCATION_BONUS_ATTEMPTS", 2))
             wrapper_bonus_attempts = max(0, _env_int("SCRIPT_PARSE_REPAIR_WRAPPER_BONUS_ATTEMPTS", 1))
+            # Parse-kind-specific attempt budgets reduce over-retrying benign
+            # wrappers while giving truncated payloads more room to recover.
             if parse_failure_kind == PARSE_FAILURE_TRUNCATION:
                 repair_attempts = repair_attempts_base + truncation_bonus_attempts
             elif parse_failure_kind == PARSE_FAILURE_WRAPPER:
@@ -635,6 +671,8 @@ class OpenAIClient:
                 max_input_chars=max_input_chars,
             )
             for attempt in range(1, repair_attempts + 1):
+                # LLM repair path asks for a strict JSON-only response that
+                # preserves content while fixing syntax/shape defects.
                 repair_max_tokens = _parse_repair_budget(
                     base_tokens=max_output_tokens,
                     attempt=attempt,
@@ -728,6 +766,7 @@ class OpenAIClient:
         timeout_seconds_override: Optional[int] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> bytes:
+        """Synthesize one TTS segment with retry/backoff/cancel support."""
         payload = {
             "model": self.tts_model,
             "voice": voice,
@@ -815,6 +854,8 @@ class OpenAIClient:
             if cancel_check is None:
                 time.sleep(backoff_s)
             else:
+                # Sleep in short intervals so external cancellation can interrupt
+                # retry backoff quickly.
                 wake_interval_s = max(0.05, min(0.25, backoff_s))
                 sleep_deadline = time.time() + backoff_s
                 while True:
