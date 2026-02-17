@@ -120,6 +120,9 @@ class ScriptQualityGateConfig:
     source_balance_min_category_coverage: float = 0.6
     source_balance_max_topic_share: float = 0.65
     source_balance_min_lexical_hits: int = 4
+    llm_rule_judgments_enabled: bool = True
+    llm_rule_judgments_on_fail: bool = True
+    llm_rule_judgments_min_confidence: float = 0.55
 
     @staticmethod
     def from_env(*, profile_name: str) -> "ScriptQualityGateConfig":
@@ -130,9 +133,10 @@ class ScriptQualityGateConfig:
         is_production_strict = gate_profile == "production_strict"
         strict_alternation = _env_bool("SCRIPT_STRICT_HOST_ALTERNATION", True)
 
-        action = _env_str("SCRIPT_QUALITY_GATE_ACTION", "enforce").lower()
+        default_action = "enforce" if is_production_strict else "warn"
+        action = _env_str("SCRIPT_QUALITY_GATE_ACTION", default_action).lower()
         if action not in SUPPORTED_ACTIONS:
-            action = "enforce"
+            action = default_action
 
         evaluator = _env_str("SCRIPT_QUALITY_GATE_EVALUATOR", "hybrid").lower()
         if evaluator not in SUPPORTED_EVALUATORS:
@@ -242,6 +246,19 @@ class ScriptQualityGateConfig:
             source_balance_min_lexical_hits=max(
                 1,
                 _env_int("SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS", 4),
+            ),
+            llm_rule_judgments_enabled=_env_bool(
+                "SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS",
+                True,
+            ),
+            llm_rule_judgments_on_fail=_env_bool(
+                "SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL",
+                True,
+            ),
+            llm_rule_judgments_min_confidence=_clamp(
+                _env_float("SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE", 0.55),
+                0.0,
+                1.0,
             ),
         )
 

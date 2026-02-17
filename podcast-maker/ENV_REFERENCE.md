@@ -14,7 +14,7 @@ If this file and code diverge, code is the source of truth and this file must be
 
 1. `SCRIPT_QUALITY_GATE_SCRIPT_ACTION` if valid (`off|warn|enforce`)
 2. else `SCRIPT_QUALITY_GATE_ACTION` if set and valid
-3. else profile default (`short=warn`, `standard/long=enforce`, `production_strict=enforce`)
+3. else gate-profile default (`default=warn`, `production_strict=enforce`)
 
 ## Core Runtime (config.py)
 
@@ -75,6 +75,13 @@ Profile source-validation defaults:
 - `standard`: `enforce`, warn ratio `0.50`, enforce ratio `0.35`
 - `long`: `enforce`, warn ratio `0.60`, enforce ratio `0.45`
 
+## OpenAI Client Runtime (openai_client.py)
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SCRIPT_REASONING_EFFORT` | `medium` | Base reasoning effort for script requests |
+| `SCRIPT_QUALITY_EVAL_REASONING_EFFORT` | `high` | Stage override for `script_quality_eval` freeform call |
+
 ## Audio Synthesis/Mix (config.py)
 
 | Variable | Default | Notes |
@@ -109,10 +116,13 @@ Profile source-validation defaults:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `SCRIPT_QUALITY_GATE_PROFILE` | `default` | `default|production_strict` |
-| `SCRIPT_QUALITY_GATE_ACTION` | `enforce` | Global gate action |
+| `SCRIPT_QUALITY_GATE_ACTION` | `warn` | Global gate action (`production_strict` defaults to `enforce`) |
 | `SCRIPT_QUALITY_GATE_SCRIPT_ACTION` | resolved | Stage override (`script`/`audio`) |
 | `SCRIPT_QUALITY_GATE_EVALUATOR` | `hybrid` | `rules|hybrid|llm` |
 | `SCRIPT_QUALITY_GATE_LLM_SAMPLE` | profile default | `short=0.5`, others `1.0` |
+| `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS` | `1` | Enables structured `rule_judgments` application |
+| `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL` | `1` | Allows hybrid evaluator on eligible structural failures |
+| `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE` | `0.55` | Minimum confidence to apply LLM rule judgments |
 | `SCRIPT_STRICT_HOST_ALTERNATION` | `1` | Influences speaker-run defaults |
 | `SCRIPT_QUALITY_MIN_WORDS_RATIO` | `0.7` | Min words ratio |
 | `SCRIPT_QUALITY_MAX_WORDS_RATIO` | `1.6` | Max words ratio |
@@ -160,7 +170,8 @@ Profile source-validation defaults:
 | `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_script.py` | Max orchestrated attempts |
 | `SCRIPT_ORCHESTRATED_RETRY_BACKOFF_MS` | `400` | `make_script.py` | Retry backoff |
 | `SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS` | `openai_empty_output,invalid_schema,script_quality_rejected,script_completeness_failed` | `make_script.py` | Recoverable failure kinds |
-| `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` | `120` | `make_script.py` | Total repair timeout |
+| `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` | `300` | `make_script.py` | Total repair timeout |
+| `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS` | `90` | `make_script.py` | Per-attempt repair timeout |
 | `AUDIO_ORCHESTRATED_RETRY_ENABLED` | `1` | `make_podcast.py` | Enables orchestrated retries |
 | `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_podcast.py` | Max orchestrated attempts |
 | `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` | `1200` | `make_podcast.py` | Retry backoff |

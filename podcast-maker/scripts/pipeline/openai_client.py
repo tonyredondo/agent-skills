@@ -85,9 +85,20 @@ def _resolve_openai_api_key() -> str:
 
 def _resolve_script_reasoning_effort() -> str:
     """Resolve reasoning effort level for script requests."""
-    effort = str(os.environ.get("SCRIPT_REASONING_EFFORT", "low") or "").strip().lower()
+    effort = str(os.environ.get("SCRIPT_REASONING_EFFORT", "medium") or "").strip().lower()
     if effort in {"low", "medium", "high"}:
         return effort
+    return "medium"
+
+
+def _resolve_quality_eval_reasoning_effort(default_effort: str) -> str:
+    """Resolve reasoning effort override for script quality evaluation stage."""
+    override = str(os.environ.get("SCRIPT_QUALITY_EVAL_REASONING_EFFORT", "high") or "").strip().lower()
+    if override in {"low", "medium", "high"}:
+        return override
+    normalized_default = str(default_effort or "").strip().lower()
+    if normalized_default in {"low", "medium", "high"}:
+        return normalized_default
     return "low"
 
 
@@ -536,8 +547,14 @@ class OpenAIClient:
         *,
         prompt: str,
         max_output_tokens: int,
+        reasoning_effort: str | None = None,
     ) -> Dict[str, Any]:
         """Build Responses API payload for free-form text requests."""
+        effort = str(reasoning_effort or self.script_reasoning_effort or "low").strip().lower()
+        if effort not in {"low", "medium", "high"}:
+            effort = str(self.script_reasoning_effort or "low").strip().lower()
+        if effort not in {"low", "medium", "high"}:
+            effort = "low"
         return {
             "model": self.script_model,
             "input": [
@@ -547,7 +564,7 @@ class OpenAIClient:
                 },
                 {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
             ],
-            "reasoning": {"effort": self.script_reasoning_effort},
+            "reasoning": {"effort": effort},
             "max_output_tokens": max_output_tokens,
         }
 
@@ -560,7 +577,16 @@ class OpenAIClient:
         timeout_seconds_override: Optional[int] = None,
     ) -> str:
         """Generate plain text output for evaluators and helper prompts."""
-        payload = self._script_freeform_payload(prompt=prompt, max_output_tokens=max_output_tokens)
+        reasoning_effort = self.script_reasoning_effort
+        if stage == "script_quality_eval":
+            # Keep expensive reasoning scoped to quality evaluation only so
+            # generation stages preserve throughput and parse stability.
+            reasoning_effort = _resolve_quality_eval_reasoning_effort(self.script_reasoning_effort)
+        payload = self._script_freeform_payload(
+            prompt=prompt,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+        )
         request_timeout = (
             max(1, int(timeout_seconds_override))
             if timeout_seconds_override is not None

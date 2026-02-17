@@ -4,6 +4,16 @@
 
 This document describes the production pipeline for script and audio generation.
 
+## Recent quality-loop updates
+
+- LLM-first contextual repairs now cover open tail questions, recap/summary, and closing rewrites to avoid generic deterministic filler.
+- Generation and repair prompts were reinforced to block source-availability caveats/editorial meta language in spoken lines.
+- Hybrid quality evaluation now supports structured LLM `rule_judgments` with confidence gating and a non-regression guard (deterministic `true` rules are not downgraded by LLM judgments).
+- Source-topic balance detection improved with multilingual alias hints (for example, psychology-related labels) to reduce false misses on category coverage.
+- Repair observability now includes prompt-size telemetry (`script_quality_repair_prompt_stats`, `script_quality_tail_repair_prompt_stats`) for timeout triage.
+- Reasoning effort is staged: global script default is `medium`, while quality-eval runs can use `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=high`.
+- Entrypoint repair budgets were raised to reduce long-context timeout churn (`SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS=300`, `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS=90`).
+
 ## Prerequisites
 
 - Run commands from the skill root directory (`.../podcast-maker`).
@@ -85,11 +95,16 @@ Use only flags shown in each script `--help`.
 
 `make_podcast.py` runs a script quality verification step before TTS.
 
-- default mode: `SCRIPT_QUALITY_GATE_ACTION=enforce`
+- default mode: `SCRIPT_QUALITY_GATE_ACTION=warn`
 - default evaluator: `SCRIPT_QUALITY_GATE_EVALUATOR=hybrid`
 - profile defaults for LLM sampling in hybrid mode:
   - `short`: `SCRIPT_QUALITY_GATE_LLM_SAMPLE=0.5`
   - `standard`/`long`: `SCRIPT_QUALITY_GATE_LLM_SAMPLE=1.0`
+- LLM evaluator returns a structured scorecard (`rule_judgments`) plus confidence and can evaluate failing structural cases in `hybrid` mode:
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=1`
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=1`
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE=0.55`
+  - non-regression guard: if a deterministic rule is already `true`, LLM rule judgments do not flip it to `false`
 - semantic fallback for pattern-based recap/closing rules (`summary_ok` / `closing_ok`) is enabled by default in all evaluators (`rules`/`hybrid`/`llm`), so language/wording changes do not rely on exact regex matches:
   - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=1`
   - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE=0.55`
@@ -105,14 +120,17 @@ Use only flags shown in each script `--help`.
 - optional script-stage gate (after `make_script.py` output):
   - `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce`
   - profile default when unset:
-    - `short`: `warn`
-    - `standard`/`long`: `enforce` (early fail to avoid late audio rejection)
+    - `default` profile: `warn` (all script duration profiles)
+    - `production_strict` profile: `enforce`
   - auto-repair is enabled by default before final decision:
     - `SCRIPT_QUALITY_GATE_AUTO_REPAIR=1`
     - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS=2`
   - monotonic persistence defaults:
     - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=1` (keep original if repaired candidate still fails)
     - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO=0.85` (reject repairs that shrink too much)
+  - bounded repair defaults (entrypoint-level):
+    - `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS=300`
+    - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS=90`
   - source-aware balance checks are available at script stage (where source text exists):
     - `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED=1`
     - `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE=0.6`
@@ -209,7 +227,8 @@ Common environment variables:
 
 - Logging: `LOG_LEVEL`, `LOG_HEARTBEAT_SECONDS`, `LOG_DEBUG_EVENTS`
 - Models: `SCRIPT_MODEL`/`MODEL`, `TTS_MODEL`
-- Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
+- Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `medium`)
+- Quality-eval-only reasoning override: `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, stage `script_quality_eval` only)
 - Script style controls:
   - `SCRIPT_TONE_PROFILE=balanced|energetic|broadcast` (default `balanced`)
   - `SCRIPT_TRANSITION_STYLE=subtle|explicit` (default `subtle`)
@@ -261,10 +280,13 @@ Common environment variables:
 - Cost estimation tuning: `ESTIMATED_COST_PER_SCRIPT_REQUEST_USD`, `ESTIMATED_COST_PER_TTS_REQUEST_USD`
 - Script quality gate:
   - `SCRIPT_QUALITY_GATE_PROFILE=default|production_strict` (default `default`)
-  - `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `enforce`)
-  - `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (default by profile: `short=warn`, `standard/long=enforce`)
+- `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `warn`; `production_strict` defaults to `enforce`)
+- `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (default by gate profile: `default=warn`, `production_strict=enforce`)
   - `SCRIPT_QUALITY_GATE_EVALUATOR=rules|hybrid|llm` (default `hybrid`)
   - `SCRIPT_QUALITY_GATE_LLM_SAMPLE` (profile default: `0.5` short, `1.0` standard/long)
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=0|1` (default `1`)
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=0|1` (default `1`)
+  - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE` (default `0.55`)
   - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=0|1` (default `1`; applies to `rules`/`hybrid`/`llm`)
   - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE` (default `0.55`)
   - `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES` (default `10`)
@@ -273,6 +295,8 @@ Common environment variables:
   - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS` (default `2`)
   - `SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS` (default `5200`), `SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS`
   - `SCRIPT_QUALITY_GATE_REPAIR_OUTPUT_TOKENS_HARD_CAP` (default `6400`)
+  - `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` (default `300`)
+  - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS` (default `90`)
   - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=0|1` (default `1`)
   - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO` (default `0.85`)
   - `SCRIPT_QUALITY_MIN_WORDS_RATIO`, `SCRIPT_QUALITY_MAX_WORDS_RATIO`

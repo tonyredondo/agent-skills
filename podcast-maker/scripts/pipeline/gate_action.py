@@ -12,9 +12,6 @@ def default_script_gate_action(*, script_profile_name: str) -> str:
     gate_profile = str(os.environ.get("SCRIPT_QUALITY_GATE_PROFILE", "") or "").strip().lower()
     if gate_profile == "production_strict":
         return "enforce"
-    profile = str(script_profile_name or "standard").strip().lower()
-    if profile in {"standard", "long"}:
-        return "enforce"
     return "warn"
 
 

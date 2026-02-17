@@ -116,6 +116,10 @@ Actions:
 6. If LLM evaluator is too strict/costly in current rollout, adjust:
    - `SCRIPT_QUALITY_GATE_EVALUATOR=rules|hybrid|llm`
    - `SCRIPT_QUALITY_GATE_LLM_SAMPLE` (hybrid only)
+   - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=0|1`
+   - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=0|1`
+   - `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE`
+   - `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (quality-eval stage only; keep global `SCRIPT_REASONING_EFFORT` moderate)
   - semantic fallback (for summary/closing misses, independent from exact regex wording):
      - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=1`
      - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE=0.55`
@@ -125,11 +129,15 @@ Actions:
    - `SCRIPT_QUALITY_GATE_AUTO_REPAIR=0|1`
    - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS`
    - default repair attempts: `2` (increase for harder long-context runs)
-   - defaults by profile (when unset): `short=warn`, `standard/long=enforce`
+   - repair time budgets (entrypoint-level defaults):
+     - `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS=300`
+     - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS=90`
+   - defaults by gate profile (when unset): `default=warn`, `production_strict=enforce`
    - monotonic repair defaults:
      - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=1`
      - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO=0.85`
      - `SCRIPT_QUALITY_GATE_REPAIR_OUTPUT_TOKENS_HARD_CAP=6400`
+   - monitor prompt pressure in logs (`script_quality_repair_prompt_stats`, `script_quality_tail_repair_prompt_stats`) when timeout repeats
 8. For strict production rollout defaults in one switch:
    - `SCRIPT_QUALITY_GATE_PROFILE=production_strict`
 9. Reliability v3 flags (rollback controls):

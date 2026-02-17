@@ -78,6 +78,13 @@ FAREWELL_BY_LANG = {
     "fr": "Merci de nous avoir ecoutes, a tres bientot pour le prochain episode.",
 }
 
+TAIL_QUESTION_ANSWER_BY_LANG = {
+    "es": "Buena pregunta. Si, y la clave es cerrarlo con evidencia concreta y una decision accionable.",
+    "en": "Good question. Yes, and the key is to close it with concrete evidence and one actionable decision.",
+    "pt": "Boa pergunta. Sim, e a chave e fechar isso com evidencia concreta e uma decisao acionavel.",
+    "fr": "Bonne question. Oui, et l'essentiel est de conclure avec des preuves concretes et une decision actionnable.",
+}
+
 BRIDGE_BY_LANG = {
     "es": (
         "Sigamos con la siguiente idea conectandola con lo anterior.",
@@ -101,6 +108,11 @@ TRANSITION_CONNECTOR_RE = re.compile(
     r"^(?:y\s+de\s+hecho|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|a\s+partir\s+de\s+ahi|pasando\s+a|en\s+paralelo|si\s+lo\s+conectamos|en\s+ese\s+sentido|por\s+cierto)\b",
     re.IGNORECASE,
 )
+SUMMARY_LABEL_RE = re.compile(
+    r"^(?:summary|recap|takeaways?|conclusion|resumen|sintesis|síntesis|cierre)\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+QUESTION_PUNCT_RE = re.compile(r"[¿?]")
 TRANSITION_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
 CLAUSE_SPLIT_RE = re.compile(r"[.!?;:]+")
 SPANISH_LEADING_FILLER_RE = re.compile(
@@ -686,6 +698,124 @@ def dedupe_append(base_lines: List[Dict[str, str]], new_lines: List[Dict[str, st
         out.append(line)
         added += 1
     return out, added
+
+
+def _is_question_like(text: str) -> bool:
+    """Detect whether text has direct question punctuation."""
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    return QUESTION_PUNCT_RE.search(raw) is not None
+
+
+def _summary_line_index(lines: List[Dict[str, str]]) -> int:
+    """Return first summary/recap index or -1 if not found."""
+    for idx, line in enumerate(lines):
+        raw = str(line.get("text") or "")
+        text = _normalized_text(raw)
+        if not text:
+            continue
+        if any(token in text for token in RECAP_PATTERNS):
+            return idx
+        if SUMMARY_LABEL_RE.search(text):
+            return idx
+    return -1
+
+
+def _counterpart_role(role: str) -> str:
+    """Map host role to counterpart role."""
+    normalized = str(role or "").strip()
+    if normalized == "Host1":
+        return "Host2"
+    if normalized == "Host2":
+        return "Host1"
+    return ""
+
+
+def _speaker_for_role(lines: List[Dict[str, str]], *, role: str, fallback: str) -> str:
+    """Find latest speaker name used for role, with fallback."""
+    for line in reversed(lines):
+        candidate_role = str(line.get("role") or "").strip()
+        if candidate_role != role:
+            continue
+        speaker = str(line.get("speaker") or "").strip()
+        if speaker:
+            return speaker
+    return fallback
+
+
+def _instructions_for_role(lines: List[Dict[str, str]], *, role: str, fallback: str) -> str:
+    """Find latest instruction style used for role, with fallback."""
+    for line in reversed(lines):
+        candidate_role = str(line.get("role") or "").strip()
+        if candidate_role != role:
+            continue
+        instructions = str(line.get("instructions") or "").strip()
+        if instructions:
+            return instructions
+    return fallback
+
+
+def ensure_tail_questions_answered(
+    lines: List[Dict[str, str]],
+    *,
+    language_hint: str | None = None,
+    lookback_lines: int = 6,
+) -> List[Dict[str, str]]:
+    """Insert a concise counterpart answer before recap when tail question is unresolved."""
+    out = [dict(line) for line in lines]
+    if len(out) < 3:
+        return out
+    summary_idx = _summary_line_index(out)
+    if summary_idx <= 0:
+        return out
+
+    window_start = max(0, summary_idx - max(1, int(lookback_lines)))
+    last_question_idx = -1
+    for idx in range(window_start, summary_idx):
+        if _is_question_like(str(out[idx].get("text") or "")):
+            last_question_idx = idx
+    if last_question_idx < 0:
+        return out
+
+    question_role = str(out[last_question_idx].get("role") or "").strip()
+    for idx in range(last_question_idx + 1, summary_idx):
+        response_text = str(out[idx].get("text") or "").strip()
+        if not response_text:
+            continue
+        if _is_question_like(response_text):
+            continue
+        response_role = str(out[idx].get("role") or "").strip()
+        if question_role and response_role and response_role == question_role:
+            continue
+        return out
+
+    answer_role = _counterpart_role(question_role)
+    if answer_role not in {"Host1", "Host2"}:
+        summary_role = str(out[summary_idx].get("role") or "").strip()
+        answer_role = "Host2" if summary_role == "Host1" else "Host1"
+    resolved_lang = _resolve_language_hint(out, language_hint)
+    answer_text = TAIL_QUESTION_ANSWER_BY_LANG.get(
+        resolved_lang,
+        TAIL_QUESTION_ANSWER_BY_LANG["es"],
+    )
+    summary_line = out[summary_idx]
+    fallback_speaker = str(summary_line.get("speaker") or "").strip()
+    if not fallback_speaker:
+        fallback_speaker = "Host One" if answer_role == "Host1" else "Host Two"
+    fallback_instructions = str(summary_line.get("instructions") or "")
+    answer_line = {
+        "speaker": _speaker_for_role(out[:summary_idx], role=answer_role, fallback=fallback_speaker),
+        "role": answer_role,
+        "instructions": _instructions_for_role(
+            out[:summary_idx],
+            role=answer_role,
+            fallback=fallback_instructions,
+        ),
+        "text": answer_text,
+    }
+    out.insert(summary_idx, answer_line)
+    return out
 
 
 def ensure_recap_near_end(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:

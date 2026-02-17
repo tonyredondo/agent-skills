@@ -12,7 +12,8 @@
 
 3. Stable:
    - keep current defaults
-   - keep script quality gate enabled (`SCRIPT_QUALITY_GATE_ACTION=enforce`)
+   - keep script quality gate enabled (`SCRIPT_QUALITY_GATE_ACTION=warn` by default; use `SCRIPT_QUALITY_GATE_PROFILE=production_strict` for blocking mode)
+   - keep hybrid evaluator with structured LLM rule judgments enabled (`SCRIPT_QUALITY_GATE_EVALUATOR=hybrid`, `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=1`)
    - run `run_golden_pipeline.py` + `check_golden_suite.py` on each release candidate
    - keep SLO monitoring active for each release
 
@@ -33,6 +34,11 @@ export SLO_REQUIRED_FAILED_WINDOWS=2
 python3 ./scripts/run_golden_pipeline.py --candidate-dir ./.golden_candidates
 python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates
 ```
+
+Quality-gate rollout notes:
+
+- If hybrid LLM judgments over-correct in canary, tune confidence first (`SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE`) before disabling judgments.
+- If quality repair times out on long prompts, raise only entrypoint repair budgets first (`SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS`, `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS`) and keep attempt count stable.
 
 ## Rollback
 

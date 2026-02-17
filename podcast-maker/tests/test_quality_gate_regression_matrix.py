@@ -114,8 +114,8 @@ class QualityGateRegressionMatrixTests(unittest.TestCase):
                     if evaluator == "llm":
                         self.assertTrue(report["llm_called"])
                     elif evaluator == "hybrid":
-                        # Hybrid does not spend an extra call when deterministic rules already fail.
-                        self.assertFalse(report["llm_called"])
+                        # Hybrid can request an LLM rule scorecard on eligible structural fails.
+                        self.assertTrue(report["llm_called"])
 
     def test_env_fuzz_for_finite_numeric_parsing(self) -> None:
         bad_values = ["nan", "inf", "-inf", "abc", "", " "]

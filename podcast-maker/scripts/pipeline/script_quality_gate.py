@@ -37,6 +37,7 @@ from .script_postprocess import (
     detect_truncation_indices,
     ensure_farewell_close,
     ensure_recap_near_end,
+    ensure_tail_questions_answered,
     harden_script_structure,
 )
 
@@ -133,6 +134,9 @@ TRANSITION_CONNECTOR_RE = re.compile(
 SOURCE_TIMELINE_INDEX_ITEM_RE = re.compile(
     r"^\s*-\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+·\s+([^·]+)\s+·\s+(.+?)\s*(?:\([^)]*\))?\s*$"
 )
+ABRUPT_TRANSITION_RATIO_ALLOWANCE = 0.35
+OPEN_QUESTION_TAIL_SOURCE_MAX_CHARS = 6000
+OPEN_QUESTION_TAIL_LINES_FOCUS = 12
 SOURCE_BALANCE_STOPWORDS = {
     "the",
     "and",
@@ -155,6 +159,33 @@ SOURCE_BALANCE_STOPWORDS = {
     "donde",
     "porque",
 }
+
+SOURCE_CATEGORY_ALIAS_HINTS: Dict[str, tuple[str, ...]] = {
+    "psychology": (
+        "psicologia",
+        "psicologico",
+        "comportamiento",
+        "conducta",
+        "injusticia",
+        "inequidad",
+        "equidad",
+        "normas sociales",
+        "aprendizaje por observacion",
+    ),
+}
+
+LLM_RULE_JUDGMENT_KEYS = (
+    "summary_ok",
+    "closing_ok",
+    "open_questions_resolved_ok",
+    "no_internal_workflow_meta_ok",
+    "no_podcast_meta_language_ok",
+    "no_declared_tease_intent_ok",
+    "line_length_ok",
+    "question_cadence_ok",
+    "transition_smoothness_ok",
+    "source_topic_balance_ok",
+)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -473,6 +504,13 @@ def _extract_source_category_profiles(source_context: str) -> Dict[str, Dict[str
             for token in alias_tokens:
                 if len(token) >= 4:
                     profile["keywords"].add(token)
+        for category_hint, alias_values in SOURCE_CATEGORY_ALIAS_HINTS.items():
+            if category_hint not in normalized_category:
+                continue
+            for alias_value in alias_values:
+                for token in _tokenize_content(alias_value):
+                    if len(token) >= 4 and token not in SOURCE_BALANCE_STOPWORDS:
+                        profile["keywords"].add(token)
     return profiles
 
 
@@ -610,6 +648,7 @@ def _build_llm_prompt(
     script_cfg: ScriptConfig,
     quality_cfg: ScriptQualityGateConfig,
     word_count: int,
+    source_context: str | None = None,
 ) -> str:
     rows: List[str] = []
     for line in lines:
@@ -619,21 +658,40 @@ def _build_llm_prompt(
     dialogue = "\n".join(rows)
     if len(dialogue) > quality_cfg.llm_max_prompt_chars:
         dialogue = dialogue[: quality_cfg.llm_max_prompt_chars]
+    source_snippet = _compact_source_context(source_context, max_chars=4000)
+    rule_lines = "\n".join([f"- {name}: true|false" for name in LLM_RULE_JUDGMENT_KEYS])
     return (
         "Evaluate this podcast script quality (language may vary).\n"
         "Return ONLY JSON object with keys:\n"
-        "overall_score, cadence_score, logic_score, clarity_score, pass, reasons.\n"
+        "overall_score, cadence_score, logic_score, clarity_score, pass, confidence, reasons, rule_judgments.\n"
         "Scores are numbers from 0 to 5.\n"
-        "Set pass=true only if the script sounds natural and useful for spoken audio.\n\n"
+        "confidence is 0..1 and reflects reliability of rule_judgments.\n"
+        "rule_judgments must be an object with these keys and boolean values:\n"
+        f"{rule_lines}\n"
+        "Set pass=true only if the script sounds natural and useful for spoken audio.\n"
+        "Use conservative judgment for binary failures: set any *_ok=false only when evidence is clear.\n\n"
         "Scoring rubric:\n"
         "- Naturalness: no document/meta narration (index/summary-section/tramo workflow talk).\n"
         "- Interaction: hosts react to each other (questions, answers, contrast), not parallel monologues.\n"
         "- Friction quality: disagreement and challenge are welcome, but no explicit intent announcements like 'te voy a chinchar/pinchar'.\n"
-        "- Topic balance: no single early topic dominates disproportionately when the script is multi-topic.\n"
+        "- Topic balance: no single early topic dominates disproportionately when the script is multi-topic and source indicates multiple categories.\n"
         "- Transitions: topic switches feel connected and non-abrupt.\n"
         "- Closing: recap + farewell are present and coherent.\n\n"
+        "Calibration notes for rule_judgments:\n"
+        "- summary_ok=true when there is a recap/takeaway near the ending, even if not labeled as 'summary'.\n"
+        "- closing_ok=true when there is a clear sign-off (thanks/farewell/next episode), even if brief.\n"
+        "- open_questions_resolved_ok=true when open questions are either answered or intentionally parked with clear closure.\n"
+        "- no_podcast_meta_language_ok=false only for explicit structural narration (table of contents, tramo, route, section bookkeeping).\n"
+        "- transition_smoothness_ok=false only when repeated abrupt jumps break coherence.\n"
+        "- source_topic_balance_ok=false only when a materially relevant source category is clearly omitted or eclipsed.\n\n"
+        "Score calibration:\n"
+        "- Reserve scores below 3.2 for severe listening problems.\n"
+        "- Minor repetition or stylistic roughness should not automatically drop scores below threshold.\n"
+        "- Keep reasons concise (max 6) and evidence-based.\n\n"
         f"Target range words: {script_cfg.min_words}-{script_cfg.max_words}\n"
         f"Actual words: {word_count}\n\n"
+        "SOURCE CONTEXT (optional):\n"
+        f"{source_snippet if source_snippet else '(not provided)'}\n\n"
         "SCRIPT:\n"
         f"{dialogue}\n"
     )
@@ -711,6 +769,14 @@ def evaluate_script_quality(
     max_question_streak = max(1, int(quality_cfg.max_question_streak))
     transition_stats = _transition_smoothness_stats(lines)
     max_abrupt_transition_count = max(0, int(quality_cfg.max_abrupt_transition_count))
+    abrupt_transition_count = int(transition_stats.get("abrupt_transition_count", 0.0))
+    abrupt_transition_checked_pairs = int(transition_stats.get("checked_pairs", 0.0))
+    dynamic_abrupt_transition_allowance = max_abrupt_transition_count
+    if abrupt_transition_checked_pairs > 0:
+        dynamic_abrupt_transition_allowance = max(
+            dynamic_abrupt_transition_allowance,
+            int(math.ceil(float(abrupt_transition_checked_pairs) * ABRUPT_TRANSITION_RATIO_ALLOWANCE)),
+        )
     source_topic_balance = _source_topic_balance_stats(
         lines=lines,
         source_context=source_context,
@@ -740,9 +806,14 @@ def evaluate_script_quality(
         ),
         "transition_smoothness_ok": (
             line_count < 10
-            or int(transition_stats.get("abrupt_transition_count", 0.0)) <= max_abrupt_transition_count
+            or abrupt_transition_count <= dynamic_abrupt_transition_allowance
         ),
         "source_topic_balance_ok": source_topic_balance_ok,
+    }
+    # Non-regression guard: LLM rule judgments may rescue deterministic false
+    # negatives, but must not flip an already-passing deterministic rule to false.
+    llm_non_regression_rules: Dict[str, bool] = {
+        key: bool(value) for key, value in rules.items()
     }
     semantic_info: Dict[str, Any] = {
         "enabled": bool(quality_cfg.semantic_rule_fallback),
@@ -810,16 +881,23 @@ def evaluate_script_quality(
                     semantic_info["error"] = True
                     semantic_info["skipped_reason"] = str(exc)
 
-    reasons_structural: List[str] = [name for name, ok in rules.items() if not ok]
+    reasons_structural: List[str] = []
     reasons_llm: List[str] = []
     llm_score_failures: List[str] = []
-    rules_pass = all(rules.values())
+    pre_llm_rules_pass = all(rules.values())
+    llm_eligible_rule_fail = any(
+        not bool(rules.get(rule_name, True))
+        for rule_name in LLM_RULE_JUDGMENT_KEYS
+    )
     llm_called = False
     llm_sampled = False
     llm_error = False
     llm_explicit_fail = False
     llm_editorial_fail = False
     llm_truncation_claims_filtered = 0
+    llm_rule_judgments: Dict[str, bool] = {}
+    llm_rule_judgments_applied = False
+    llm_rule_judgments_confidence: float | None = None
     tail_structurally_complete = _tail_is_structurally_complete(lines)
     scores: Dict[str, float | None] = {
         "overall_score": None,
@@ -832,7 +910,21 @@ def evaluate_script_quality(
     critical_score_threshold = _critical_score_threshold()
 
     if quality_cfg.evaluator in {"llm", "hybrid"}:
-        llm_sampled = quality_cfg.evaluator == "llm" or (rules_pass and _should_sample_llm(lines, quality_cfg.llm_sample_rate))
+        if quality_cfg.evaluator == "llm":
+            llm_sampled = True
+        else:
+            sampled = _should_sample_llm(lines, quality_cfg.llm_sample_rate)
+            llm_sampled = bool(
+                sampled
+                and (
+                    pre_llm_rules_pass
+                    or (
+                        bool(quality_cfg.llm_rule_judgments_enabled)
+                        and bool(quality_cfg.llm_rule_judgments_on_fail)
+                        and llm_eligible_rule_fail
+                    )
+                )
+            )
         if llm_sampled:
             # LLM evaluator contributes editorial quality signals that
             # complement deterministic structural checks.
@@ -845,6 +937,7 @@ def evaluate_script_quality(
                     script_cfg=script_cfg,
                     quality_cfg=quality_cfg,
                     word_count=word_count,
+                    source_context=source_context,
                 )
                 try:
                     raw = client.generate_freeform_text(
@@ -857,6 +950,35 @@ def evaluate_script_quality(
                     scores["cadence_score"] = _score(payload, "cadence_score")
                     scores["logic_score"] = _score(payload, "logic_score")
                     scores["clarity_score"] = _score(payload, "clarity_score")
+                    llm_rule_judgments_confidence = _score_confidence(payload, "confidence")
+                    raw_rule_judgments = payload.get("rule_judgments", {})
+                    parsed_rule_judgments: Dict[str, bool] = {}
+                    if isinstance(raw_rule_judgments, dict):
+                        for rule_name in LLM_RULE_JUDGMENT_KEYS:
+                            if rule_name in raw_rule_judgments:
+                                parsed_rule_judgments[rule_name] = _to_bool(raw_rule_judgments.get(rule_name))
+                    llm_rule_judgments = parsed_rule_judgments
+                    confidence_ok = (
+                        llm_rule_judgments_confidence is None
+                        or llm_rule_judgments_confidence >= quality_cfg.llm_rule_judgments_min_confidence
+                    )
+                    if (
+                        quality_cfg.llm_rule_judgments_enabled
+                        and confidence_ok
+                        and parsed_rule_judgments
+                    ):
+                        applied_rule_count = 0
+                        for rule_name, value in parsed_rule_judgments.items():
+                            if rule_name in rules:
+                                if (
+                                    rule_name in llm_non_regression_rules
+                                    and bool(llm_non_regression_rules.get(rule_name, False))
+                                    and (not bool(value))
+                                ):
+                                    continue
+                                rules[rule_name] = bool(value)
+                                applied_rule_count += 1
+                        llm_rule_judgments_applied = applied_rule_count > 0
                     llm_reasons = payload.get("reasons", [])
                     if isinstance(llm_reasons, list):
                         for item in llm_reasons:
@@ -901,6 +1023,8 @@ def evaluate_script_quality(
                     reasons_llm.append(f"llm_evaluator_error:{exc}")
                     llm_editorial_fail = False
 
+    reasons_structural = [name for name, ok in rules.items() if not ok]
+    rules_pass = all(rules.values())
     structural_fail = bool(reasons_structural)
     score_values = [score for score in scores.values() if score is not None]
     critical_score_failed = bool(score_values) and any(
@@ -971,9 +1095,11 @@ def evaluate_script_quality(
             "max_question_streak": int(question_stats.get("max_question_streak", 0.0)),
             "max_question_ratio_allowed": round(float(max_question_ratio), 4),
             "max_question_streak_allowed": int(max_question_streak),
-            "abrupt_transition_count": int(transition_stats.get("abrupt_transition_count", 0.0)),
+            "abrupt_transition_count": int(abrupt_transition_count),
             "abrupt_transition_ratio": round(float(transition_stats.get("abrupt_transition_ratio", 0.0)), 4),
+            "abrupt_transition_checked_pairs": int(abrupt_transition_checked_pairs),
             "max_abrupt_transition_count_allowed": int(max_abrupt_transition_count),
+            "max_abrupt_transition_count_dynamic_allowed": int(dynamic_abrupt_transition_allowance),
             "source_topic_balance_status": str(source_topic_balance.get("status", "not_applicable")),
             "source_topic_balance_applicable": bool(source_topic_balance.get("applicable", False)),
             "source_topic_balance_pass": bool(source_topic_balance.get("pass", True)),
@@ -997,6 +1123,9 @@ def evaluate_script_quality(
         "llm_explicit_fail": bool(llm_explicit_fail),
         "llm_editorial_fail": bool(llm_editorial_fail),
         "llm_truncation_claims_filtered": int(llm_truncation_claims_filtered),
+        "llm_rule_judgments": llm_rule_judgments,
+        "llm_rule_judgments_applied": bool(llm_rule_judgments_applied),
+        "llm_rule_judgments_confidence": llm_rule_judgments_confidence,
         "llm_degraded_to_rules": bool(llm_error and quality_cfg.evaluator in {"llm", "hybrid"}),
         "semantic_rule_fallback": semantic_info,
         "source_topic_balance": source_topic_balance,
@@ -1100,6 +1229,7 @@ def _build_repair_prompt(
         - Keep instructions in English single-line format.
         - Preserve conversation flow and avoid generic filler.
         - Do not include internal workflow/tooling disclosures in spoken text (for example script paths, shell commands, DailyRead pipeline notes, Tavily, Serper).
+        - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
         - Do not use document meta narration (for example: "segun el indice", "en este resumen", "siguiente tramo", "ruta del episodio", "tabla de contenidos").
         - Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
         - Avoid repetitive line openers across consecutive turns (especially repeated "Y ...").
@@ -1132,6 +1262,97 @@ def _build_repair_prompt(
     ).strip()
 
 
+def _report_has_reason(report: Dict[str, Any], reason: str) -> bool:
+    """Check whether quality report includes a specific reason token."""
+    needle = str(reason or "").strip()
+    if not needle:
+        return False
+    reasons = report.get("reasons", [])
+    if not isinstance(reasons, list):
+        return False
+    for item in reasons:
+        if str(item or "").strip() == needle:
+            return True
+    return False
+
+
+def _compact_source_context(source_context: str | None, *, max_chars: int) -> str:
+    """Trim source context to bounded size while preserving head/tail."""
+    text = str(source_context or "").strip()
+    if not text:
+        return ""
+    limit = max(400, int(max_chars))
+    if len(text) <= limit:
+        return text
+    head = max(240, int(limit * 0.7))
+    tail = max(120, limit - head - 40)
+    return f"{text[:head]}\n...[source truncated]...\n{text[-tail:]}"
+
+
+def _build_open_question_tail_repair_prompt(
+    *,
+    payload: Dict[str, List[Dict[str, str]]],
+    report: Dict[str, Any],
+    script_cfg: ScriptConfig,
+    quality_cfg: ScriptQualityGateConfig,
+    source_context: str | None,
+) -> str:
+    """Build focused prompt for tail/closing quality repair."""
+    compact = canonical_json(payload)
+    if len(compact) > quality_cfg.repair_max_input_chars:
+        compact = compact[: quality_cfg.repair_max_input_chars]
+    source_snippet = _compact_source_context(
+        source_context,
+        max_chars=OPEN_QUESTION_TAIL_SOURCE_MAX_CHARS,
+    )
+    lines = list(payload.get("lines", []))
+    tail_focus = canonical_json({"lines": lines[-OPEN_QUESTION_TAIL_LINES_FOCUS:]})
+    reasons = report.get("reasons", [])
+    reason_lines: List[str] = []
+    if isinstance(reasons, list):
+        for item in reasons[:12]:
+            text = str(item or "").strip()
+            if text:
+                reason_lines.append(f"- {text}")
+    reasons_text = "\n".join(reason_lines) if reason_lines else "- open_questions_resolved_ok"
+    return textwrap.dedent(
+        f"""
+        You are repairing a Spanish podcast script JSON that fails quality checks near the ending.
+        Return ONLY JSON object with key "lines" and fields: speaker, role, instructions, text.
+
+        Main issue(s):
+        {reasons_text}
+
+        Repair goal:
+        - Repair the ending so it sounds natural, specific, and contextual.
+        - If there is an unresolved direct question before closing, answer it explicitly with meaningful content.
+        - If a grounded answer is not available, rewrite/remove the dangling question into a declarative closing bridge.
+        - Ensure recap + farewell are coherent and non-generic.
+        - Avoid generic filler (do NOT use empty placeholders like "buena pregunta..." without concrete topic content).
+        - Keep the final flow natural: answer/closure -> concise recap -> short farewell.
+
+        Constraints:
+        - Keep spoken text in Spanish and instructions in English single-line format.
+        - Keep role values Host1/Host2 and maintain strict alternation.
+        - Preserve facts and avoid inventing names, dates, numbers, or tools not present in source/context.
+        - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
+        - Apply minimal edits, mainly in the ending region; keep earlier dialogue intact unless strictly required.
+        - Keep each spoken line concise (typically 1-2 sentences).
+        - Do not leave open questions unresolved before recap/farewell.
+        - Maintain target episode size around {script_cfg.min_words}-{script_cfg.max_words} words.
+
+        SOURCE CONTEXT (optional):
+        {source_snippet if source_snippet else "(not provided)"}
+
+        ENDING FOCUS (latest lines):
+        {tail_focus}
+
+        FULL INPUT JSON:
+        {compact}
+        """
+    ).strip()
+
+
 def _deterministic_repair_payload(
     payload: Dict[str, List[Dict[str, str]]],
     *,
@@ -1139,7 +1360,8 @@ def _deterministic_repair_payload(
 ) -> Dict[str, List[Dict[str, str]]]:
     """Apply deterministic structure fixes before any LLM repair."""
     base_lines = list(payload.get("lines", []))
-    lines = ensure_recap_near_end(base_lines)
+    lines = ensure_tail_questions_answered(base_lines)
+    lines = ensure_recap_near_end(lines)
     lines = ensure_farewell_close(lines)
     lines = harden_script_structure(
         lines,
@@ -1199,6 +1421,7 @@ def attempt_script_quality_repair(
     min_words_required = max(1, int(initial_report.get("min_words_required", script_cfg.min_words)))
     repair_timeout_reached = False
     hard_fail_eligible = bool(initial_report.get("hard_fail_eligible", not initial_pass))
+    tail_attempts_used = 0
     deadline: float | None = None
     if total_timeout_seconds is not None:
         try:
@@ -1263,6 +1486,136 @@ def attempt_script_quality_repair(
         }
 
     _check_cancelled()
+    tail_contextual_reasons = {
+        "open_questions_resolved_ok",
+        "summary_ok",
+        "closing_ok",
+    }
+    current_reasons = {
+        str(item or "").strip()
+        for item in list(current_report.get("reasons", []))
+        if str(item or "").strip()
+    }
+    tail_contextual_only = bool(current_reasons) and current_reasons.issubset(tail_contextual_reasons)
+    if (
+        tail_contextual_only
+        and client is not None
+        and hasattr(client, "generate_script_json")
+    ):
+        # Prefer a context-aware LLM fix for tail/closing issues before
+        # applying deterministic fallback templates.
+        if _stage_timed_out():
+            tail_attempts_used = 1
+            history.append({"attempt": "tail_llm", "status": "timeout", "reason": "quality_repair_timeout"})
+            current_report = dict(current_report)
+            timeout_reasons = list(current_report.get("reasons", []))
+            if "quality_repair_timeout" not in timeout_reasons:
+                timeout_reasons.append("quality_repair_timeout")
+            current_report["reasons"] = timeout_reasons
+            current_report["pass"] = False
+            current_report["status"] = "failed"
+            current_report["hard_fail_eligible"] = True
+            current_report["editorial_warn_only"] = False
+            current_report["failure_kind"] = ERROR_KIND_SCRIPT_QUALITY
+            current_report["repair_timeout_reached"] = True
+            return {
+                "payload": current_payload,
+                "report": _with_repair_metadata(
+                    current_report,
+                    initial_pass=False,
+                    attempted=True,
+                    succeeded=False,
+                    changed=False,
+                    attempts_used=tail_attempts_used,
+                    history=history,
+                ),
+                "repaired": False,
+            }
+        try:
+            tail_attempts_used = 1
+            repair_max_output_tokens = _repair_output_token_budget(
+                payload=current_payload,
+                quality_cfg=quality_cfg,
+            )
+            tail_prompt = _build_open_question_tail_repair_prompt(
+                payload=current_payload,
+                report=current_report,
+                script_cfg=script_cfg,
+                quality_cfg=quality_cfg,
+                source_context=source_context,
+            )
+            if logger is not None:
+                logger.info(
+                    "script_quality_tail_repair_prompt_stats",
+                    prompt_chars=len(tail_prompt),
+                    input_json_chars=len(canonical_json(current_payload)),
+                    max_output_tokens=repair_max_output_tokens,
+                    attempt_timeout_seconds=int(attempt_timeout_seconds or 0),
+                )
+            tail_call_kwargs: Dict[str, Any] = {
+                "prompt": tail_prompt,
+                "schema": SCRIPT_JSON_SCHEMA,
+                "max_output_tokens": repair_max_output_tokens,
+                "stage": f"{stage_prefix}_tail_open_question",
+            }
+            if attempt_timeout_seconds is not None and int(attempt_timeout_seconds) > 0:
+                tail_call_kwargs["timeout_seconds_override"] = int(attempt_timeout_seconds)
+            try:
+                tail_repaired_raw = client.generate_script_json(**tail_call_kwargs)
+            except TypeError as exc:
+                if "timeout_seconds_override" not in str(exc):
+                    raise
+                tail_call_kwargs.pop("timeout_seconds_override", None)
+                tail_repaired_raw = client.generate_script_json(**tail_call_kwargs)
+            tail_candidate_payload = validate_script_payload(tail_repaired_raw)
+            tail_candidate_payload = {
+                "lines": harden_script_structure(
+                    list(tail_candidate_payload.get("lines", [])),
+                    max_consecutive_same_speaker=quality_cfg.max_consecutive_same_speaker,
+                )
+            }
+            tail_candidate_report = evaluate_script_quality(
+                validated_payload=tail_candidate_payload,
+                script_cfg=script_cfg,
+                quality_cfg=quality_cfg,
+                script_path=script_path,
+                client=client,
+                logger=logger,
+                source_context=source_context,
+            )
+            tail_candidate_pass = bool(tail_candidate_report.get("pass", False))
+            history.append(
+                {
+                    "attempt": "tail_llm",
+                    "status": ("tail_llm_passed" if tail_candidate_pass else "tail_llm_failed"),
+                    "reasons": list(tail_candidate_report.get("reasons", [])),
+                    "word_count": tail_candidate_report.get("word_count"),
+                }
+            )
+            if tail_candidate_pass:
+                tail_candidate_hash = content_hash(canonical_json(tail_candidate_payload))
+                changed = tail_candidate_hash != initial_hash
+                return {
+                    "payload": tail_candidate_payload,
+                    "report": _with_repair_metadata(
+                        tail_candidate_report,
+                        initial_pass=False,
+                        attempted=True,
+                        succeeded=True,
+                        changed=changed,
+                        attempts_used=tail_attempts_used,
+                        history=history,
+                    ),
+                    "repaired": changed,
+                }
+            if not quality_cfg.repair_revert_on_fail:
+                current_payload = tail_candidate_payload
+                current_report = tail_candidate_report
+        except Exception as exc:  # noqa: BLE001
+            history.append({"attempt": "tail_llm", "status": "error", "error": str(exc)})
+            if logger is not None:
+                logger.warn("script_quality_tail_llm_repair_failed", error=str(exc))
+
     deterministic_payload = _deterministic_repair_payload(
         current_payload,
         quality_cfg=quality_cfg,
@@ -1291,7 +1644,7 @@ def attempt_script_quality_repair(
                     attempted=True,
                     succeeded=False,
                     changed=False,
-                    attempts_used=0,
+                    attempts_used=tail_attempts_used,
                     history=history,
                 ),
                 "repaired": False,
@@ -1324,7 +1677,7 @@ def attempt_script_quality_repair(
                     attempted=True,
                     succeeded=True,
                     changed=changed,
-                    attempts_used=0,
+                    attempts_used=tail_attempts_used,
                     history=history,
                 ),
                 "repaired": changed,
@@ -1345,7 +1698,7 @@ def attempt_script_quality_repair(
                 attempted=True,
                 succeeded=False,
                 changed=False,
-                attempts_used=0,
+                attempts_used=tail_attempts_used,
                 history=history,
             ),
             "repaired": False,
@@ -1386,6 +1739,15 @@ def attempt_script_quality_repair(
             script_cfg=script_cfg,
             quality_cfg=quality_cfg,
         )
+        if logger is not None:
+            logger.info(
+                "script_quality_repair_prompt_stats",
+                attempt=attempt,
+                prompt_chars=len(prompt),
+                input_json_chars=len(canonical_json(current_payload)),
+                max_output_tokens=repair_max_output_tokens,
+                attempt_timeout_seconds=int(attempt_timeout_seconds or 0),
+            )
         try:
             # LLM repair attempt: strict schema response plus optional timeout
             # override for bounded stage latency.
@@ -1469,7 +1831,7 @@ def attempt_script_quality_repair(
                         attempted=True,
                         succeeded=True,
                         changed=changed,
-                        attempts_used=attempt,
+                        attempts_used=(tail_attempts_used + attempt),
                         history=history,
                     ),
                     "repaired": changed,
@@ -1512,7 +1874,7 @@ def attempt_script_quality_repair(
             attempted=True,
             succeeded=False,
             changed=final_changed,
-            attempts_used=attempts_used,
+            attempts_used=(tail_attempts_used + attempts_used),
             history=history,
         ),
         "repaired": repaired,

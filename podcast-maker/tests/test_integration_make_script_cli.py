@@ -354,8 +354,8 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
                                                             ):
                                                                 rc = make_script.main()
             self.assertEqual(rc, 0)
-            self.assertEqual(int(captured_call.get("attempt_timeout_seconds", 0)), 45)
-            self.assertEqual(float(captured_call.get("total_timeout_seconds", 0.0)), 120.0)
+            self.assertEqual(int(captured_call.get("attempt_timeout_seconds", 0)), 90)
+            self.assertEqual(float(captured_call.get("total_timeout_seconds", 0.0)), 300.0)
             self.assertTrue(callable(captured_call.get("cancel_check")))
 
     def test_manifest_final_update_runs_when_manifest_init_fails(self) -> None:

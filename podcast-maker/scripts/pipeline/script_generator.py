@@ -89,6 +89,9 @@ SOURCE_INDEX_ITEM_RE = re.compile(
 SOURCE_TIMELINE_INDEX_ITEM_RE = re.compile(
     r"^\s*-\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+·\s+([^·]+)\s+·\s+(.+?)\s*(?:\([^)]*\))?\s*$"
 )
+CONTEXTUAL_FALLBACK_SOURCE_MAX_CHARS = 7000
+CONTEXTUAL_FALLBACK_RECENT_LINES = 14
+CONTEXTUAL_TAIL_MIN_WORD_RATIO = 0.9
 
 
 @dataclass
@@ -124,6 +127,259 @@ class ScriptGenerator:
             values.append(normalized_mode)
         by_stage[key] = values
         self._fallback_modes_by_stage = by_stage
+
+    def _can_use_contextual_fallback_llm(self) -> bool:
+        """Return True when client supports contextual schema rewrites."""
+        return (
+            self.client is not None
+            and hasattr(self.client, "generate_script_json")
+        )
+
+    def _compact_source_context(self, source_context: str, *, max_chars: int) -> str:
+        """Trim source context to bounded size while preserving head/tail."""
+        text = str(source_context or "").strip()
+        if not text:
+            return ""
+        limit = max(400, int(max_chars))
+        if len(text) <= limit:
+            return text
+        head = max(260, int(limit * 0.72))
+        tail = max(120, limit - head - 44)
+        return f"{text[:head]}\n...[source truncated]...\n{text[-tail:]}"
+
+    def _tail_has_recap_and_farewell(self, lines: List[Dict[str, str]]) -> bool:
+        """Lightweight lexical check for recap + farewell near the end."""
+        if not lines:
+            return False
+        tail = " ".join(str(line.get("text") or "").lower() for line in lines[-5:])
+        recap_tokens = (
+            "en resumen",
+            "nos quedamos con",
+            "in summary",
+            "to sum up",
+            "em resumo",
+            "en bref",
+        )
+        farewell_tokens = (
+            "gracias por escuch",
+            "nos vemos",
+            "hasta la proxima",
+            "nos escuchamos",
+            "thank you for listening",
+            "see you",
+            "obrigado por ouvir",
+            "merci",
+            "au revoir",
+        )
+        has_recap = any(token in tail for token in recap_tokens)
+        has_farewell = any(token in tail for token in farewell_tokens)
+        return has_recap and has_farewell
+
+    def _build_contextual_continuation_fallback_prompt(
+        self,
+        *,
+        lines_so_far: List[Dict[str, str]],
+        min_words: int,
+        max_words: int,
+        source_context: str,
+        mode: str,
+    ) -> str:
+        """Build contextual fallback prompt for continuation recovery."""
+        current_words = count_words_from_lines(lines_so_far)
+        remaining_to_min = max(0, int(min_words) - int(current_words))
+        recent = _recent_dialogue(
+            lines_so_far,
+            max(8, min(self.config.max_context_lines, CONTEXTUAL_FALLBACK_RECENT_LINES)),
+        )
+        source_snippet = self._compact_source_context(
+            source_context,
+            max_chars=CONTEXTUAL_FALLBACK_SOURCE_MAX_CHARS,
+        )
+        if mode == "closure":
+            goal_block = (
+                "- You are near the target length and must close naturally.\n"
+                "- Add 2-4 new lines that resolve pending ideas, include a concise recap, and end with a short farewell.\n"
+                "- If there is a direct unresolved question near the tail, answer it explicitly before recap/farewell."
+            )
+        else:
+            goal_block = (
+                "- Add 2-4 meaningful lines that extend the conversation with source-grounded substance.\n"
+                "- If this extension reaches the target zone, close naturally with recap + farewell.\n"
+                "- If not yet near closure, keep continuity and avoid early farewell."
+            )
+        return textwrap.dedent(
+            f"""
+            Continue this podcast script with NEW lines only.
+            Return ONLY JSON with key "lines" and fields: speaker, role, instructions, text.
+
+            Hard constraints:
+            - Keep spoken text in the same language/tone as recent context (Spanish by default).
+            - Keep role values Host1/Host2 and strict alternation.
+            - Keep instructions in English single-line format.
+            - Avoid generic filler and prefab lines; every line must be contextual and specific to this episode.
+            - Preserve factual consistency with source context.
+            - Do not invent names, dates, numbers, or tools absent from source/context.
+            - Keep each line concise (1-2 sentences).
+            - Use smooth bridges between turns and avoid abrupt topic jumps.
+            - Avoid repeating transition templates or sentence openers.
+            - Do not mention internal tooling/workflow.
+
+            Fallback goal:
+            {goal_block}
+
+            Current words: {current_words}
+            Target range: {min_words}-{max_words}
+            Remaining words to minimum target: {remaining_to_min}
+
+            RECENT CONTEXT:
+            {recent if recent else "(no recent lines)"}
+
+            SOURCE CONTEXT:
+            {source_snippet if source_snippet else "(not provided)"}
+            """
+        ).strip()
+
+    def _request_contextual_continuation_fallback_lines(
+        self,
+        *,
+        lines_so_far: List[Dict[str, str]],
+        min_words: int,
+        max_words: int,
+        source_context: str,
+        continuation_stage: str,
+        mode: str,
+    ) -> List[Dict[str, str]]:
+        """Ask LLM for contextual continuation fallback lines."""
+        if not self._can_use_contextual_fallback_llm():
+            return []
+        try:
+            prompt = self._build_contextual_continuation_fallback_prompt(
+                lines_so_far=lines_so_far,
+                min_words=min_words,
+                max_words=max_words,
+                source_context=source_context,
+                mode=mode,
+            )
+            stage = f"{continuation_stage}_contextual_{mode}_fallback"
+            max_output_tokens = max(700, min(2400, int(self.config.max_output_tokens_continuation)))
+            repaired_raw = self.client.generate_script_json(
+                prompt=prompt,
+                schema=SCRIPT_JSON_SCHEMA,
+                max_output_tokens=max_output_tokens,
+                stage=stage,
+            )
+            candidate_lines = validate_script_payload(repaired_raw)["lines"]
+            merged, added = dedupe_append(lines_so_far, candidate_lines)
+            if added <= 0:
+                return []
+            merged = fix_mid_farewells(merged)
+            merged = harden_script_structure(
+                merged,
+                max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
+            )
+            if mode == "closure" and not self._tail_has_recap_and_farewell(merged):
+                return []
+            if len(merged) <= len(lines_so_far):
+                return []
+            return merged[len(lines_so_far) :]
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warn(
+                "continuation_contextual_fallback_failed",
+                stage=continuation_stage,
+                mode=mode,
+                error=str(exc),
+            )
+            return []
+
+    def _build_contextual_tail_finalize_prompt(
+        self,
+        *,
+        lines: List[Dict[str, str]],
+        min_words: int,
+        max_words: int,
+        source_context: str,
+    ) -> str:
+        """Build postprocess tail-finalization prompt with source context."""
+        payload = canonical_json({"lines": lines})
+        source_snippet = self._compact_source_context(
+            source_context,
+            max_chars=CONTEXTUAL_FALLBACK_SOURCE_MAX_CHARS,
+        )
+        tail_focus = canonical_json({"lines": lines[-CONTEXTUAL_FALLBACK_RECENT_LINES:]})
+        return textwrap.dedent(
+            f"""
+            Refine this podcast script JSON with minimal edits, focusing on the ending quality.
+            Return ONLY JSON object with key "lines" and fields: speaker, role, instructions, text.
+
+            Goals:
+            - Keep the script natural, specific, and contextual (no prefab filler).
+            - If needed, resolve open tail questions before closing.
+            - Ensure ending flow: brief synthesis/recap + short natural farewell.
+            - Keep smooth transitions and avoid abrupt topic jumps.
+            - Keep most earlier lines intact; prioritize tail-focused edits.
+
+            Constraints:
+            - Keep spoken text in the script language and instructions in English single-line format.
+            - Keep Host1/Host2 alternation and consistent speakers.
+            - Preserve source-grounded facts and avoid fabricated details.
+            - Keep each line concise (1-2 sentences).
+            - Do not mention internal tooling/workflow details.
+            - Do not expose source-availability caveats or editorial process disclaimers in spoken text (for example: "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
+            - Maintain target size around {min_words}-{max_words} words.
+
+            SOURCE CONTEXT:
+            {source_snippet if source_snippet else "(not provided)"}
+
+            ENDING FOCUS:
+            {tail_focus}
+
+            FULL SCRIPT JSON:
+            {payload}
+            """
+        ).strip()
+
+    def _request_contextual_tail_finalize(
+        self,
+        *,
+        lines: List[Dict[str, str]],
+        min_words: int,
+        max_words: int,
+        source_context: str,
+    ) -> List[Dict[str, str]] | None:
+        """Ask LLM to rewrite tail naturally before deterministic closure fallback."""
+        if not self._can_use_contextual_fallback_llm():
+            return None
+        prompt = self._build_contextual_tail_finalize_prompt(
+            lines=lines,
+            min_words=min_words,
+            max_words=max_words,
+            source_context=source_context,
+        )
+        max_output_tokens = max(900, min(3200, int(self.config.max_output_tokens_chunk)))
+        repaired_raw = self.client.generate_script_json(
+            prompt=prompt,
+            schema=SCRIPT_JSON_SCHEMA,
+            max_output_tokens=max_output_tokens,
+            stage="postprocess_contextual_tail_finalize",
+        )
+        candidate_lines = validate_script_payload(repaired_raw)["lines"]
+        candidate_lines = harden_script_structure(
+            candidate_lines,
+            max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
+        )
+        if not candidate_lines:
+            return None
+        baseline_wc = count_words_from_lines(lines)
+        candidate_wc = count_words_from_lines(candidate_lines)
+        min_ratio = max(0.5, min(1.0, _env_float("SCRIPT_CONTEXTUAL_TAIL_MIN_WORD_RATIO", CONTEXTUAL_TAIL_MIN_WORD_RATIO)))
+        retained_floor = int(math.floor(float(max(0, baseline_wc)) * float(min_ratio)))
+        if baseline_wc >= int(min_words) and candidate_wc < int(min_words):
+            return None
+        if baseline_wc > 0 and candidate_wc < retained_floor:
+            return None
+        if not self._tail_has_recap_and_farewell(candidate_lines):
+            return None
+        return candidate_lines
 
     def _is_empty_output_error(self, exc: BaseException) -> bool:
         message = str(exc or "").strip().lower()
@@ -244,8 +500,14 @@ class ScriptGenerator:
     def _transition_guidance(self) -> str:
         style = self._script_transition_style()
         if style == "explicit":
-            return "Use explicit but elegant bridge phrases when switching topics."
-        return "Use subtle, elegant transitions integrated into normal dialogue."
+            return (
+                "Treat transition smoothness as a hard requirement: on every topic switch, "
+                "use an explicit but elegant bridge that links the previous point to the new one."
+            )
+        return (
+            "Treat transition smoothness as a hard requirement: even with subtle style, "
+            "every topic pivot must keep a clear bridge to the previous turn."
+        )
 
     def _precision_guidance(self) -> str:
         precision = self._script_precision_profile()
@@ -253,7 +515,12 @@ class ScriptGenerator:
             return (
                 "Prefer source-grounded claims; if uncertain, phrase as hypothesis/recommendation and avoid made-up figures."
             )
-        return "Use only source-grounded claims; do not invent names, numbers, dates, or tools not present in context."
+        return (
+            "Use only source-grounded claims; do not invent names, numbers, dates, or tools not present in context. "
+            "If detail is uncertain, use neutral listener-facing uncertainty (for example 'todavia no esta claro') "
+            "and never mention source/document limitations (for example 'en el material que tenemos hoy', "
+            "'sin inventar especificaciones', 'no tenemos ese dato aqui')."
+        )
 
     def _closing_guidance(self) -> str:
         style = self._script_closing_style()
@@ -629,9 +896,12 @@ class ScriptGenerator:
             {opening_agenda_line}
             - Avoid placeholders.
             - Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            - Do not expose source-availability caveats or editorial process disclaimers in spoken text (for example: "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
             - Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             - Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
             - Use elegant spoken transitions between topics instead of numeric labels.
+            - Transition smoothness is a hard quality constraint: each topic switch must include a brief bridge that links one concrete element from the previous turn to the new angle.
+            - Avoid abrupt jumps between unrelated ideas; on pivots, keep lexical carry-over or an explicit connector before introducing the next detail.
             - Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
             - Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example, use "donante adicional" instead of "donor extra").
             - Keep each spoken line concise (usually 1-2 sentences).
@@ -1325,6 +1595,7 @@ class ScriptGenerator:
         continuation_round: int,
         min_words: int,
         max_words: int,
+        source_context: str,
     ) -> List[Dict[str, str]]:
         """Generate continuation lines with targeted recovery on parse failures."""
         continuation_stage = f"continuation_{continuation_round}"
@@ -1396,8 +1667,33 @@ class ScriptGenerator:
             primary_threshold = int(round(float(min_words) * fallback_min_ratio))
             secondary_threshold = int(round(float(min_words) * fallback_secondary_ratio))
             if current_words >= primary_threshold:
-                # Near-target path prioritizes deterministic closure and minimal
-                # additive lines over more model calls.
+                # Near-target path prefers contextual LLM closure fallback first,
+                # then deterministic closure as a safety net.
+                contextual_closure_lines = self._request_contextual_continuation_fallback_lines(
+                    lines_so_far=lines_so_far,
+                    min_words=min_words,
+                    max_words=max_words,
+                    source_context=source_context,
+                    continuation_stage=continuation_stage,
+                    mode="closure",
+                )
+                if contextual_closure_lines:
+                    self._continuation_fallback_closures = int(
+                        getattr(self, "_continuation_fallback_closures", 0)
+                    ) + 1
+                    self._mark_fallback_mode(stage=continuation_stage, mode="continuation_closure_fallback")
+                    self._mark_fallback_mode(
+                        stage=continuation_stage,
+                        mode="continuation_closure_contextual_llm_fallback",
+                    )
+                    self.logger.warn(
+                        "continuation_closure_fallback_applied",
+                        stage=continuation_stage,
+                        variant="contextual_llm",
+                        added_lines=len(contextual_closure_lines),
+                        current_words=current_words,
+                    )
+                    return contextual_closure_lines
                 fallback_lines = self._deterministic_continuation_fallback_lines(lines_so_far=lines_so_far)
                 if fallback_lines:
                     self._continuation_fallback_closures = int(
@@ -1411,6 +1707,32 @@ class ScriptGenerator:
                         current_words=current_words,
                     )
                     return fallback_lines
+                contextual_extension_lines = self._request_contextual_continuation_fallback_lines(
+                    lines_so_far=lines_so_far,
+                    min_words=min_words,
+                    max_words=max_words,
+                    source_context=source_context,
+                    continuation_stage=continuation_stage,
+                    mode="extension",
+                )
+                if contextual_extension_lines:
+                    self._continuation_fallback_extensions = int(
+                        getattr(self, "_continuation_fallback_extensions", 0)
+                    ) + 1
+                    self._mark_fallback_mode(stage=continuation_stage, mode="continuation_extension_fallback")
+                    self._mark_fallback_mode(
+                        stage=continuation_stage,
+                        mode="continuation_extension_contextual_llm_fallback",
+                    )
+                    self.logger.warn(
+                        "continuation_extension_fallback_applied",
+                        stage=continuation_stage,
+                        tier="primary",
+                        variant="contextual_llm",
+                        added_lines=len(contextual_extension_lines),
+                        current_words=current_words,
+                    )
+                    return contextual_extension_lines
                 extension_lines = self._deterministic_continuation_extension_lines(
                     lines_so_far=lines_so_far,
                     min_words=min_words,
@@ -1429,8 +1751,34 @@ class ScriptGenerator:
                     )
                     return extension_lines
             elif current_words >= secondary_threshold:
-                # Mid-tier threshold allows deterministic extension only, keeping
-                # quality while avoiding another fragile continuation request.
+                # Mid-tier threshold tries contextual extension fallback before
+                # deterministic extension.
+                contextual_extension_lines = self._request_contextual_continuation_fallback_lines(
+                    lines_so_far=lines_so_far,
+                    min_words=min_words,
+                    max_words=max_words,
+                    source_context=source_context,
+                    continuation_stage=continuation_stage,
+                    mode="extension",
+                )
+                if contextual_extension_lines:
+                    self._continuation_fallback_extensions = int(
+                        getattr(self, "_continuation_fallback_extensions", 0)
+                    ) + 1
+                    self._mark_fallback_mode(stage=continuation_stage, mode="continuation_extension_fallback")
+                    self._mark_fallback_mode(
+                        stage=continuation_stage,
+                        mode="continuation_extension_contextual_llm_fallback",
+                    )
+                    self.logger.warn(
+                        "continuation_extension_fallback_applied",
+                        stage=continuation_stage,
+                        tier="secondary",
+                        variant="contextual_llm",
+                        added_lines=len(contextual_extension_lines),
+                        current_words=current_words,
+                    )
+                    return contextual_extension_lines
                 extension_lines = self._deterministic_continuation_extension_lines(
                     lines_so_far=lines_so_far,
                     min_words=min_words,
@@ -1475,11 +1823,14 @@ class ScriptGenerator:
             Keep spoken text in Spanish and instructions in English single-line format.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            Do not expose source-availability caveats or editorial process disclaimers in spoken text (for example: "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
             Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
             Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example, use "donante adicional" instead of "donor extra").
             Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
             Use elegant spoken transitions to move between ideas naturally.
+            Transition smoothness is a hard quality constraint: each topic switch must add a brief bridge that links one concrete element from the previous turn to the new one.
+            Avoid abrupt jumps between unrelated ideas; on pivots, keep lexical carry-over or an explicit connector before adding the next detail.
             {precision_guidance}
             {author_guidance}
             Avoid semantic repetition: do not restate the same thesis with different wording.
@@ -1536,11 +1887,14 @@ class ScriptGenerator:
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Fix abrupt/incomplete ending and provide a coherent closing flow.
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
+            Do not expose source-availability caveats or editorial process disclaimers in spoken text (for example: "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
             Do not speak as if reading a document structure (avoid phrases such as "segun el indice", "en este resumen", "en el siguiente tramo", "ruta del episodio", "tabla de contenidos").
             Avoid opening consecutive turns with the same connector (especially repeated "Y ...").
             Prefer natural Spanish technical phrasing and avoid unnecessary anglicisms (for example, use "donante adicional" instead of "donor extra").
             Do not use explicit section labels in spoken text (for example: "Bloque 1", "Bloque 2", "Section 3", "Part 4").
             Use elegant spoken transitions to connect final ideas.
+            Transition smoothness is a hard quality constraint: each pivot must include a brief bridge that links one concrete element from the previous turn to the new one.
+            Avoid abrupt jumps between unrelated ideas; if changing angle near the ending, add an explicit connector before introducing the next point.
             {precision_guidance}
             {author_guidance}
             Keep style conversational, warm, and engaging, and avoid duplicated lines.
@@ -2082,6 +2436,7 @@ class ScriptGenerator:
                             continuation_round=continuation_round,
                             min_words=min_words,
                             max_words=max_words,
+                            source_context=source_for_generation,
                         )
                         merged, _ = dedupe_append(lines, new_lines)
                         lines = fix_mid_farewells(merged)
@@ -2215,6 +2570,28 @@ class ScriptGenerator:
                     )
                 else:
                     completeness_before_repair = _default_completeness_report(reason="check_disabled")
+                tentative_tail = ensure_recap_near_end(lines)
+                tentative_tail = ensure_farewell_close(tentative_tail)
+                tail_repair_needed = tentative_tail != lines
+                if tail_repair_needed:
+                    try:
+                        contextual_tail = self._request_contextual_tail_finalize(
+                            lines=lines,
+                            min_words=min_words,
+                            max_words=max_words,
+                            source_context=source_for_generation,
+                        )
+                        if contextual_tail:
+                            lines = contextual_tail
+                            self._mark_fallback_mode(
+                                stage="postprocess",
+                                mode="postprocess_contextual_tail_finalize",
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        self.logger.warn(
+                            "postprocess_contextual_tail_finalize_failed",
+                            error=str(exc),
+                        )
                 lines = ensure_recap_near_end(lines)
                 lines = ensure_farewell_close(lines)
                 lines = harden_script_structure(

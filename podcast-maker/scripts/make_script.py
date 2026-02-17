@@ -758,13 +758,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 repair_total_timeout_seconds = max(
                     1,
-                    _env_int("SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS", 120),
+                    _env_int("SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS", 300),
                 )
                 repair_attempt_timeout_seconds = max(
                     1,
                     _env_int(
                         "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS",
-                        45,
+                        90,
                     ),
                 )
                 quality_repair_started = time.time()

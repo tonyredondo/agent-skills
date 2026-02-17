@@ -15,8 +15,8 @@ class GateActionResolutionTests(unittest.TestCase):
     def test_default_action_uses_profile(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(default_script_gate_action(script_profile_name="short"), "warn")
-            self.assertEqual(default_script_gate_action(script_profile_name="standard"), "enforce")
-            self.assertEqual(default_script_gate_action(script_profile_name="long"), "enforce")
+            self.assertEqual(default_script_gate_action(script_profile_name="standard"), "warn")
+            self.assertEqual(default_script_gate_action(script_profile_name="long"), "warn")
 
     def test_default_action_production_strict_forces_enforce(self) -> None:
         with mock.patch.dict(os.environ, {"SCRIPT_QUALITY_GATE_PROFILE": "production_strict"}, clear=True):

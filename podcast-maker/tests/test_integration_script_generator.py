@@ -750,6 +750,113 @@ class ContinuationExtensionFallbackClient(FakeScriptClient):
         }
 
 
+class ContinuationContextualClosureFallbackClient(FakeScriptClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stages: list[str] = []
+
+    def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
+        self.requests_made += 1
+        self.stages.append(stage)
+        if stage.endswith("contextual_closure_fallback"):
+            return {
+                "lines": [
+                    {
+                        "speaker": "Lucia",
+                        "role": "Host2",
+                        "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+                        "text": (
+                            "En resumen, priorizamos estabilidad incremental, evidencia semanal, control de "
+                            "riesgo en despliegues, validacion por umbrales y decisiones operativas trazables "
+                            "para evitar retrabajo en cada iteracion."
+                        ),
+                    },
+                    {
+                        "speaker": "Carlos",
+                        "role": "Host1",
+                        "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                        "text": (
+                            "Gracias por escuchar, seguimos en el proximo episodio con nuevos casos "
+                            "practicos y comparaciones de implementacion."
+                        ),
+                    },
+                ]
+            }
+        if stage.startswith("continuation_"):
+            raise RuntimeError(
+                f"OpenAI returned empty text for stage={stage}; parse_failure_kind=empty_output"
+            )
+        return {
+            "lines": [
+                {
+                    "speaker": "Carlos",
+                    "role": "Host1",
+                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                    "text": (
+                        "Bloque inicial con suficiente contexto tecnico y operativo para quedar cerca "
+                        "del minimo de palabras requerido por la configuracion."
+                    ),
+                },
+                {
+                    "speaker": "Carlos",
+                    "role": "Host1",
+                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                    "text": (
+                        "Profundizamos en decisiones de arquitectura, riesgo y observabilidad para "
+                        "permitir cierre contextual."
+                    ),
+                },
+            ]
+        }
+
+
+class JsonOnlyScriptClient:
+    def __init__(self) -> None:
+        self.requests_made = 0
+        self.estimated_cost_usd = 0.0
+
+    def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
+        self.requests_made += 1
+        return {
+            "lines": [
+                {
+                    "speaker": "Carlos",
+                    "role": "Host1",
+                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                    "text": "Contenido breve de prueba para cliente JSON only.",
+                }
+            ]
+        }
+
+
+class TailFinalizeShorteningClient(FakeScriptClient):
+    def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
+        self.requests_made += 1
+        if stage == "postprocess_contextual_tail_finalize":
+            return {
+                "lines": [
+                    {
+                        "speaker": "Lucia",
+                        "role": "Host2",
+                        "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+                        "text": "En resumen, cerramos prioridades con evidencia semanal.",
+                    },
+                    {
+                        "speaker": "Carlos",
+                        "role": "Host1",
+                        "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                        "text": "Gracias por escuchar, nos vemos en la proxima.",
+                    },
+                ]
+            }
+        return super().generate_script_json(
+            prompt=prompt,
+            schema=schema,
+            max_output_tokens=max_output_tokens,
+            stage=stage,
+        )
+
+
 class WholeChunkRetryClient(FakeScriptClient):
     def __init__(self) -> None:
         super().__init__()
@@ -792,6 +899,70 @@ class WholeChunkRetryClient(FakeScriptClient):
 
 
 class ScriptGeneratorIntegrationTests(unittest.TestCase):
+    def test_contextual_fallback_supports_json_only_client(self) -> None:
+        cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, words_per_min=120, min_words=80, max_words=120)
+        reliability = ReliabilityConfig.from_env()
+        logger = Logger.create(
+            LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+        )
+        client = JsonOnlyScriptClient()
+        gen = ScriptGenerator(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+        self.assertTrue(bool(gen._can_use_contextual_fallback_llm()))  # noqa: SLF001
+
+    def test_contextual_tail_finalize_rejects_overcompressed_candidate(self) -> None:
+        cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, words_per_min=120, min_words=60, max_words=140)
+        reliability = ReliabilityConfig.from_env()
+        logger = Logger.create(
+            LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+        )
+        client = TailFinalizeShorteningClient()
+        gen = ScriptGenerator(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+        lines = [
+            {
+                "speaker": "Carlos",
+                "role": "Host1",
+                "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                "text": (
+                    "Hoy aterrizamos riesgos operativos, trazabilidad de cambios y decisiones de despliegue "
+                    "para evitar retrabajo y mejorar consistencia entre equipos."
+                ),
+            },
+            {
+                "speaker": "Lucia",
+                "role": "Host2",
+                "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+                "text": (
+                    "Tambien revisamos umbrales de validacion, criterios de rollback y monitoreo continuo "
+                    "para sostener fiabilidad en cada iteracion."
+                ),
+            },
+            {
+                "speaker": "Carlos",
+                "role": "Host1",
+                "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                "text": (
+                    "En resumen, priorizamos estabilidad incremental con evidencia semanal y decisiones "
+                    "operativas claras antes de acelerar."
+                ),
+            },
+            {
+                "speaker": "Lucia",
+                "role": "Host2",
+                "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+                "text": "Gracias por escuchar, nos vemos en el proximo episodio.",
+            },
+        ]
+        candidate = gen._request_contextual_tail_finalize(  # noqa: SLF001
+            lines=lines,
+            min_words=cfg.min_words,
+            max_words=cfg.max_words,
+            source_context=(
+                "El equipo prioriza fiabilidad incremental, umbrales de validacion y decisiones de rollback "
+                "antes de acelerar despliegues."
+            ),
+        )
+        self.assertIsNone(candidate)
+
     def test_chunk_prompt_uses_different_closing_rules_for_final_chunk(self) -> None:
         cfg = ScriptConfig.from_env(profile_name="standard", target_minutes=15, words_per_min=130, min_words=600, max_words=900)
         reliability = ReliabilityConfig.from_env()
@@ -2378,6 +2549,49 @@ class ScriptGeneratorIntegrationTests(unittest.TestCase):
                 summary = json.load(f)
             self.assertGreaterEqual(int(summary.get("continuation_recovery_attempts", 0)), 1)
             self.assertGreaterEqual(int(summary.get("continuation_fallback_closures", 0)), 1)
+
+    def test_continuation_contextual_closure_fallback_uses_llm_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = ScriptConfig.from_env(
+                profile_name="short",
+                target_minutes=5,
+                words_per_min=120,
+                min_words=55,
+                max_words=120,
+            )
+            cfg = dataclasses.replace(
+                cfg,
+                checkpoint_dir=os.path.join(tmp, "ckpt"),
+                max_continuations_per_chunk=2,
+                no_progress_rounds=6,
+                min_word_delta=1,
+                min_words=45,
+                max_words=120,
+            )
+            reliability = ReliabilityConfig.from_env()
+            logger = Logger.create(
+                LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+            )
+            client = ContinuationContextualClosureFallbackClient()
+            gen = ScriptGenerator(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+            out_path = os.path.join(tmp, "episode_continuation_contextual_closure.json")
+            with mock.patch.dict(
+                os.environ,
+                {"SCRIPT_CONTINUATION_FALLBACK_MIN_RATIO": "0.5"},
+                clear=False,
+            ):
+                result = gen.generate(source_text=("tema base " * 200).strip(), output_path=out_path)
+            self.assertTrue(os.path.exists(result.output_path))
+            with open(result.run_summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f)
+            self.assertGreaterEqual(int(summary.get("continuation_fallback_closures", 0)), 1)
+            stage_modes = list(dict(summary.get("fallback_modes_by_stage", {})).get("continuation_1", []))
+            self.assertIn("continuation_closure_contextual_llm_fallback", stage_modes)
+            with open(result.output_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            joined = " ".join(str(line.get("text", "")) for line in payload.get("lines", []))
+            self.assertIn("estabilidad incremental", joined)
+            self.assertIn("gracias por escuchar", joined.lower())
 
     def test_continuation_extension_fallback_handles_already_closed_near_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

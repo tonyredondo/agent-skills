@@ -147,7 +147,8 @@ Useful env vars:
 - `LOG_HEARTBEAT_SECONDS=15`
 - `LOG_DEBUG_EVENTS=1`
 - `SCRIPT_MODEL` / `MODEL` (default script model: `gpt-5.2`)
-- `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
+- `SCRIPT_REASONING_EFFORT=low|medium|high` (default `medium`)
+- `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, quality-eval stage override)
 - `SCRIPT_TONE_PROFILE=balanced|energetic|broadcast` (default `balanced`)
 - `SCRIPT_TRANSITION_STYLE=subtle|explicit` (default `subtle`)
 - `SCRIPT_PRECISION_PROFILE=strict|balanced` (default `strict`)
@@ -195,10 +196,13 @@ Useful env vars:
 - `OPENAI_CIRCUIT_BREAKER_FAILURES`
 - `ESTIMATED_COST_PER_SCRIPT_REQUEST_USD`, `ESTIMATED_COST_PER_TTS_REQUEST_USD`
 - `SCRIPT_QUALITY_GATE_PROFILE=default|production_strict` (default `default`)
-- `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `enforce`)
-- `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (profile default: `short=warn`, `standard/long=enforce`)
+- `SCRIPT_QUALITY_GATE_ACTION=off|warn|enforce` (default `warn`; `production_strict` defaults to `enforce`)
+- `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce` (default by gate profile: `default=warn`, `production_strict=enforce`)
 - `SCRIPT_QUALITY_GATE_EVALUATOR=rules|hybrid|llm` (default `hybrid`)
 - `SCRIPT_QUALITY_GATE_LLM_SAMPLE` (profile defaults: `0.5` short, `1.0` standard/long)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS=0|1` (default `1`)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_ON_FAIL=0|1` (default `1`)
+- `SCRIPT_QUALITY_GATE_LLM_RULE_JUDGMENTS_MIN_CONFIDENCE` (default `0.55`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK=0|1` (default `1`; used in `rules`/`hybrid`/`llm`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE` (default `0.55`)
 - `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES` (default `10`)
@@ -207,6 +211,8 @@ Useful env vars:
 - `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS` (default `2`)
 - `SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS` (default `5200`), `SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS`
 - `SCRIPT_QUALITY_GATE_REPAIR_OUTPUT_TOKENS_HARD_CAP` (default `6400`)
+- `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` (default `300`)
+- `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS` (default `90`)
 - `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL=0|1` (default `1`)
 - `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO` (default `0.85`)
 - `SCRIPT_QUALITY_MIN_WORDS_RATIO`, `SCRIPT_QUALITY_MAX_WORDS_RATIO`

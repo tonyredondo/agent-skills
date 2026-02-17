@@ -136,12 +136,14 @@ class ScriptQualityGateTests(unittest.TestCase):
             short_cfg = ScriptQualityGateConfig.from_env(profile_name="short")
             standard_cfg = ScriptQualityGateConfig.from_env(profile_name="standard")
             long_cfg = ScriptQualityGateConfig.from_env(profile_name="long")
-        self.assertEqual(short_cfg.action, "enforce")
+        self.assertEqual(short_cfg.action, "warn")
         self.assertEqual(short_cfg.evaluator, "hybrid")
         self.assertAlmostEqual(short_cfg.llm_sample_rate, 0.5)
         self.assertEqual(short_cfg.repair_attempts, 2)
         self.assertEqual(short_cfg.repair_max_output_tokens, 5200)
         self.assertTrue(short_cfg.semantic_rule_fallback)
+        self.assertTrue(short_cfg.llm_rule_judgments_enabled)
+        self.assertTrue(short_cfg.llm_rule_judgments_on_fail)
         self.assertGreaterEqual(short_cfg.semantic_min_confidence, 0.0)
         self.assertLessEqual(short_cfg.semantic_min_confidence, 1.0)
         self.assertAlmostEqual(standard_cfg.llm_sample_rate, 1.0)
@@ -182,7 +184,7 @@ class ScriptQualityGateTests(unittest.TestCase):
             clear=True,
         ):
             cfg = ScriptQualityGateConfig.from_env(profile_name="short")
-        self.assertEqual(cfg.action, "enforce")
+        self.assertEqual(cfg.action, "warn")
         self.assertEqual(cfg.evaluator, "hybrid")
         self.assertAlmostEqual(cfg.llm_sample_rate, 0.5)
         self.assertEqual(cfg.max_consecutive_same_speaker, 1)
@@ -271,6 +273,193 @@ class ScriptQualityGateTests(unittest.TestCase):
         self.assertTrue(report["pass"])
         self.assertEqual(report["status"], "passed")
         self.assertIsNone(report["failure_kind"])
+
+    def test_transition_smoothness_scales_with_checked_pairs(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=10.0,
+            max_repeat_line_ratio=1.0,
+        )
+        lines = [
+            _line(
+                "Ana",
+                "Host1",
+                "Analizamos latencia confiabilidad observabilidad despliegue gradual y decisiones de producto.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Cocina urbana bicicletas oceano volcanes fotografia macro y meteorologia costera.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Dicho esto, volvemos a latencia confiabilidad observabilidad y despliegue gradual con ejemplos.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Conectamos latencia confiabilidad observabilidad con riesgos reales del despliegue continuo.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Arqueologia submarina origami astronomia casera carpinteria poetica y botellas antiguas.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Dicho esto, regresamos a latencia confiabilidad y observabilidad para decidir prioridades.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Aterrizamos como latencia y confiabilidad guian la observabilidad en equipos tecnicos.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Jardineria lunar acrobacia culinaria ceramica tribal y coleccionismo de faroles.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Dicho esto, retomamos latencia confiabilidad observabilidad con foco practico para producto.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Revisamos evidencias de latencia confiabilidad y observabilidad para decidir prioridades.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Escalada alpina ukulele mecanica vintage numismatica radial y mapas historicos.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Dicho esto, cerramos latencia confiabilidad observabilidad y despliegue gradual en equipos.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "En resumen, latencia confiabilidad y observabilidad se equilibran con medicion continua.",
+            ),
+            _line("Luis", "Host2", "Gracias por escuchar, nos vemos en la proxima entrega del podcast."),
+        ]
+        report = evaluate_script_quality(
+            validated_payload={"lines": lines},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/transition_smoothness_scaled_threshold.json",
+        )
+        self.assertTrue(bool(report["pass"]))
+        self.assertTrue(bool(report["rules"]["transition_smoothness_ok"]))
+        evidence = dict(report.get("evidence_structural", {}))
+        self.assertGreater(
+            int(evidence.get("abrupt_transition_count", 0)),
+            int(evidence.get("max_abrupt_transition_count_allowed", 0)),
+        )
+        self.assertGreaterEqual(
+            int(evidence.get("max_abrupt_transition_count_dynamic_allowed", 0)),
+            int(evidence.get("abrupt_transition_count", 0)),
+        )
+
+    def test_transition_smoothness_still_fails_when_abrupt_ratio_is_high(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=10.0,
+            max_repeat_line_ratio=1.0,
+        )
+        lines = [
+            _line(
+                "Ana",
+                "Host1",
+                "Analizamos latencia confiabilidad observabilidad despliegue gradual y decisiones de producto.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Cocina urbana bicicletas oceano volcanes fotografia macro y meteorologia costera.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Conectamos latencia confiabilidad observabilidad con riesgos reales del despliegue continuo.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Arqueologia submarina origami astronomia casera carpinteria poetica y botellas antiguas.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Aterrizamos como latencia y confiabilidad guian la observabilidad en equipos tecnicos.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Jardineria lunar acrobacia culinaria ceramica tribal y coleccionismo de faroles.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Revisamos evidencias de latencia confiabilidad y observabilidad para decidir prioridades.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Escalada alpina ukulele mecanica vintage numismatica radial y mapas historicos.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Retomamos latencia confiabilidad observabilidad y despliegue gradual para producto.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Caligrafia atomica cetreria urbana geologia marina cartografia teatral y mosaicos antiguos.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "Consolidamos latencia confiabilidad observabilidad y trazabilidad para decisiones de entrega.",
+            ),
+            _line(
+                "Luis",
+                "Host2",
+                "Fermentacion creativa relojeria artesanal paleobotanica local y coleccion de medallones.",
+            ),
+            _line(
+                "Ana",
+                "Host1",
+                "En resumen, mantenemos foco en decisiones tecnicas medibles y coherentes.",
+            ),
+            _line("Luis", "Host2", "Gracias por escuchar, nos vemos en la proxima entrega."),
+        ]
+        report = evaluate_script_quality(
+            validated_payload={"lines": lines},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/transition_smoothness_high_abrupt_ratio.json",
+        )
+        self.assertFalse(bool(report["pass"]))
+        self.assertFalse(bool(report["rules"]["transition_smoothness_ok"]))
+        self.assertIn("transition_smoothness_ok", set(report["reasons"]))
+        evidence = dict(report.get("evidence_structural", {}))
+        self.assertGreater(
+            int(evidence.get("abrupt_transition_count", 0)),
+            int(evidence.get("max_abrupt_transition_count_dynamic_allowed", 0)),
+        )
 
     def test_rules_fail_when_question_is_unanswered_before_summary(self) -> None:
         cfg = ScriptQualityGateConfig.from_env(profile_name="short")
@@ -712,6 +901,143 @@ class ScriptQualityGateTests(unittest.TestCase):
         self.assertTrue(report["llm_called"])
         self.assertEqual(fake_client.calls, 1)
 
+    def test_hybrid_keeps_structural_summary_and_closing_when_llm_marks_false(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="hybrid",
+            llm_sample_rate=1.0,
+            min_words_ratio=0.0,
+            max_words_ratio=5.0,
+            source_balance_enabled=False,
+        )
+        fake_client = _FakeLLMClient(
+            '{"overall_score":4.4,"cadence_score":4.2,"logic_score":4.3,"clarity_score":4.1,'
+            '"pass":true,"confidence":0.9,"reasons":[],'
+            '"rule_judgments":{"summary_ok":false,"closing_ok":false}}'
+        )
+        report = evaluate_script_quality(
+            validated_payload={"lines": _good_lines()},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/hybrid_summary_closing_non_regression.json",
+            client=fake_client,
+        )
+        self.assertTrue(report["llm_called"])
+        self.assertTrue(bool(report["rules"].get("summary_ok", False)))
+        self.assertTrue(bool(report["rules"].get("closing_ok", False)))
+        self.assertFalse(bool(report.get("llm_rule_judgments_applied", True)))
+        self.assertTrue(report["pass"])
+
+    def test_rules_source_topic_balance_recognizes_psychology_aliases_in_spanish(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=5.0,
+            source_balance_enabled=True,
+            source_balance_min_lexical_hits=2,
+            source_balance_min_category_coverage=1.0,
+            source_balance_max_topic_share=1.0,
+        )
+        lines = [
+            _line("Ana", "Host1", "Hoy analizamos materiales cuanticos y su coherencia en sustratos reales."),
+            _line("Luis", "Host2", "Tambien revisamos aprendizaje por observacion y normas sociales sobre inequidad."),
+            _line("Ana", "Host1", "En resumen, combinamos ciencia de materiales y psicologia del comportamiento."),
+            _line("Luis", "Host2", "Gracias por escuchar, nos vemos en el siguiente episodio."),
+        ]
+        report = evaluate_script_quality(
+            validated_payload={"lines": lines},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/rules_source_balance_psych_aliases.json",
+            source_context=(
+                "- 2026-02-17 12:03 · Science · quantum materials and coherence trade-offs\n"
+                "- 2026-02-17 10:03 · Psychology · fairness norms learned by observation"
+            ),
+        )
+        self.assertTrue(bool(report["rules"].get("source_topic_balance_ok", False)))
+
+    def test_hybrid_applies_llm_rule_judgments_for_source_topic_balance(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="hybrid",
+            llm_sample_rate=1.0,
+            min_words_ratio=0.0,
+            max_words_ratio=5.0,
+            source_balance_enabled=True,
+            source_balance_min_lexical_hits=1,
+            source_balance_min_category_coverage=1.0,
+        )
+        lines = [
+            _line("Ana", "Host1", "Hoy revisamos materiales cuanticos para chips robustos y energia eficiente."),
+            _line("Luis", "Host2", "Comparamos candidatos 2D y criterios de seleccion en electronica avanzada."),
+            _line("Ana", "Host1", "En resumen, conviene validar materiales con metrica clara y pasos reproducibles."),
+            _line("Luis", "Host2", "Gracias por escuchar, nos vemos en el siguiente episodio."),
+        ]
+        fake_client = _FakeLLMClient(
+            '{"overall_score":4.6,"cadence_score":4.5,"logic_score":4.5,"clarity_score":4.4,'
+            '"pass":true,"confidence":0.92,"reasons":[],'
+            '"rule_judgments":{"source_topic_balance_ok":true}}'
+        )
+        report = evaluate_script_quality(
+            validated_payload={"lines": lines},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/hybrid_llm_rule_judgments_source_balance.json",
+            client=fake_client,
+            source_context=(
+                "- 2026-02-17 12:03 · Science · quantum materials for resilient chips\n"
+                "- 2026-02-17 10:03 · Psychology · fairness norms learned by observation"
+            ),
+        )
+        self.assertTrue(report["llm_called"])
+        self.assertTrue(bool(report.get("llm_rule_judgments_applied", False)))
+        self.assertTrue(bool(report["rules"].get("source_topic_balance_ok", False)))
+        self.assertTrue(report["pass"])
+
+    def test_hybrid_does_not_apply_low_confidence_llm_rule_judgments(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="hybrid",
+            llm_sample_rate=1.0,
+            min_words_ratio=0.0,
+            max_words_ratio=5.0,
+            llm_rule_judgments_min_confidence=0.7,
+            source_balance_enabled=True,
+            source_balance_min_lexical_hits=1,
+            source_balance_min_category_coverage=1.0,
+        )
+        lines = [
+            _line("Ana", "Host1", "Hoy revisamos materiales cuanticos para chips robustos y energia eficiente."),
+            _line("Luis", "Host2", "Comparamos candidatos 2D y criterios de seleccion en electronica avanzada."),
+            _line("Ana", "Host1", "En resumen, conviene validar materiales con metrica clara y pasos reproducibles."),
+            _line("Luis", "Host2", "Gracias por escuchar, nos vemos en el siguiente episodio."),
+        ]
+        fake_client = _FakeLLMClient(
+            '{"overall_score":4.6,"cadence_score":4.5,"logic_score":4.5,"clarity_score":4.4,'
+            '"pass":true,"confidence":0.2,"reasons":[],'
+            '"rule_judgments":{"source_topic_balance_ok":true}}'
+        )
+        report = evaluate_script_quality(
+            validated_payload={"lines": lines},
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/hybrid_llm_rule_judgments_low_confidence.json",
+            client=fake_client,
+            source_context=(
+                "- 2026-02-17 12:03 · Science · quantum materials for resilient chips\n"
+                "- 2026-02-17 10:03 · Psychology · fairness norms learned by observation"
+            ),
+        )
+        self.assertTrue(report["llm_called"])
+        self.assertFalse(bool(report.get("llm_rule_judgments_applied", False)))
+        self.assertFalse(report["pass"])
+        self.assertIn("source_topic_balance_ok", set(report.get("reasons_structural", [])))
+
     def test_llm_mode_low_scores_warn_only_by_default(self) -> None:
         cfg = ScriptQualityGateConfig.from_env(profile_name="short")
         cfg = dataclasses.replace(
@@ -963,6 +1289,210 @@ class ScriptQualityGateTests(unittest.TestCase):
         repaired_text = "\n".join(line.get("text", "") for line in repaired_lines)
         self.assertIn("Nos quedamos con", repaired_text)
         self.assertIn("Gracias por escuch", repaired_text)
+
+    def test_attempt_script_quality_repair_deterministically_resolves_open_tail_question(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=10.0,
+            max_repeat_line_ratio=1.0,
+            auto_repair=True,
+            repair_attempts=1,
+            repair_revert_on_fail=True,
+        )
+        initial_payload = {
+            "lines": [
+                _line("Ana", "Host1", "Hoy revisamos riesgos operativos y tradeoffs de despliegue."),
+                _line(
+                    "Luis",
+                    "Host2",
+                    "Entonces, te parece mejor priorizar fiabilidad o velocidad en esta fase?",
+                ),
+                _line(
+                    "Ana",
+                    "Host1",
+                    "En resumen, conviene cerrar cada iteracion con evidencia y criterios claros.",
+                ),
+                _line("Luis", "Host2", "Gracias por escuchar, nos vemos en la proxima entrega."),
+            ]
+        }
+        initial_report = evaluate_script_quality(
+            validated_payload=initial_payload,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_open_question_fix.json",
+        )
+        self.assertFalse(initial_report["pass"])
+        self.assertIn("open_questions_resolved_ok", set(initial_report["reasons"]))
+
+        outcome = attempt_script_quality_repair(
+            validated_payload=initial_payload,
+            initial_report=initial_report,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_open_question_fix.json",
+            client=None,
+        )
+        self.assertTrue(bool(outcome["report"]["pass"]))
+        self.assertTrue(bool(outcome["report"]["repair_attempted"]))
+        self.assertTrue(bool(outcome["report"]["repair_succeeded"]))
+        self.assertEqual(int(outcome["report"]["repair_attempts_used"]), 0)
+        repaired_lines = list(outcome["payload"].get("lines", []))
+        repaired_text = "\n".join(line.get("text", "") for line in repaired_lines)
+        self.assertIn("buena pregunta", repaired_text.lower())
+        self.assertNotIn("open_questions_resolved_ok", set(outcome["report"].get("reasons", [])))
+
+    def test_attempt_script_quality_repair_prefers_llm_tail_fix_for_open_question(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=10.0,
+            max_repeat_line_ratio=1.0,
+            auto_repair=True,
+            repair_attempts=1,
+            repair_revert_on_fail=True,
+        )
+        initial_payload = {
+            "lines": [
+                _line("Ana", "Host1", "Hoy revisamos riesgos operativos y tradeoffs de despliegue."),
+                _line(
+                    "Luis",
+                    "Host2",
+                    "Entonces, te parece mejor priorizar fiabilidad o velocidad en esta fase?",
+                ),
+                _line(
+                    "Ana",
+                    "Host1",
+                    "En resumen, conviene cerrar cada iteracion con evidencia y criterios claros.",
+                ),
+                _line("Luis", "Host2", "Gracias por escuchar, nos vemos en la proxima entrega."),
+            ]
+        }
+        initial_report = evaluate_script_quality(
+            validated_payload=initial_payload,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_open_question_fix_llm.json",
+        )
+        self.assertFalse(initial_report["pass"])
+        self.assertIn("open_questions_resolved_ok", set(initial_report["reasons"]))
+
+        llm_repaired_payload = {
+            "lines": [
+                _line("Ana", "Host1", "Hoy revisamos riesgos operativos y tradeoffs de despliegue."),
+                _line(
+                    "Luis",
+                    "Host2",
+                    "Entonces, te parece mejor priorizar fiabilidad o velocidad en esta fase?",
+                ),
+                _line(
+                    "Ana",
+                    "Host1",
+                    "Priorizamos fiabilidad en esta fase para evitar retrabajo y sostener una entrega estable.",
+                ),
+                _line(
+                    "Ana",
+                    "Host1",
+                    "En resumen, conviene cerrar cada iteracion con evidencia y criterios claros.",
+                ),
+                _line("Luis", "Host2", "Gracias por escuchar, nos vemos en la proxima entrega."),
+            ]
+        }
+        client = _FakeRepairClient(repaired_payload=llm_repaired_payload)
+        outcome = attempt_script_quality_repair(
+            validated_payload=initial_payload,
+            initial_report=initial_report,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_open_question_fix_llm.json",
+            client=client,
+            source_context=(
+                "El criterio principal en esta fase es reducir retrabajo y estabilizar despliegues, "
+                "priorizando fiabilidad antes que velocidad."
+            ),
+        )
+        self.assertTrue(bool(outcome["report"]["pass"]))
+        self.assertTrue(bool(outcome["report"]["repair_attempted"]))
+        self.assertTrue(bool(outcome["report"]["repair_succeeded"]))
+        self.assertEqual(client.repair_calls, 1)
+        self.assertEqual(int(outcome["report"]["repair_attempts_used"]), 1)
+        repaired_text = "\n".join(line.get("text", "") for line in outcome["payload"]["lines"])
+        self.assertIn("Priorizamos fiabilidad", repaired_text)
+        self.assertNotIn("buena pregunta", repaired_text.lower())
+
+    def test_attempt_script_quality_repair_prefers_llm_tail_fix_for_summary_and_closing(self) -> None:
+        cfg = ScriptQualityGateConfig.from_env(profile_name="short")
+        cfg = dataclasses.replace(
+            cfg,
+            evaluator="rules",
+            min_words_ratio=0.0,
+            max_words_ratio=10.0,
+            max_repeat_line_ratio=1.0,
+            auto_repair=True,
+            repair_attempts=1,
+            repair_revert_on_fail=True,
+        )
+        initial_payload = {
+            "lines": [
+                _line("Ana", "Host1", "Hoy aterrizamos riesgos operativos para despliegues semanales."),
+                _line(
+                    "Luis",
+                    "Host2",
+                    "Conectamos decisiones de priorizacion con evidencia y tradeoffs reales del equipo.",
+                ),
+            ]
+        }
+        initial_report = evaluate_script_quality(
+            validated_payload=initial_payload,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_summary_closing_fix_llm.json",
+        )
+        self.assertFalse(initial_report["pass"])
+        self.assertIn("summary_ok", set(initial_report["reasons"]))
+        self.assertIn("closing_ok", set(initial_report["reasons"]))
+
+        llm_repaired_payload = {
+            "lines": [
+                _line("Ana", "Host1", "Hoy aterrizamos riesgos operativos para despliegues semanales."),
+                _line(
+                    "Luis",
+                    "Host2",
+                    "Conectamos decisiones de priorizacion con evidencia y tradeoffs reales del equipo.",
+                ),
+                _line(
+                    "Ana",
+                    "Host1",
+                    "En resumen, priorizamos fiabilidad incremental, medicion semanal y decisiones claras por criterio.",
+                ),
+                _line("Luis", "Host2", "Gracias por escuchar, seguimos en el proximo episodio."),
+            ]
+        }
+        client = _FakeRepairClient(repaired_payload=llm_repaired_payload)
+        outcome = attempt_script_quality_repair(
+            validated_payload=initial_payload,
+            initial_report=initial_report,
+            script_cfg=_base_script_cfg(),
+            quality_cfg=cfg,
+            script_path="/tmp/needs_summary_closing_fix_llm.json",
+            client=client,
+            source_context=(
+                "El equipo decide por fiabilidad incremental, medicion semanal y criterios de salida "
+                "antes de acelerar despliegues."
+            ),
+        )
+        self.assertTrue(bool(outcome["report"]["pass"]))
+        self.assertTrue(bool(outcome["report"]["repair_attempted"]))
+        self.assertTrue(bool(outcome["report"]["repair_succeeded"]))
+        self.assertEqual(client.repair_calls, 1)
+        self.assertEqual(int(outcome["report"]["repair_attempts_used"]), 1)
+        repaired_text = "\n".join(line.get("text", "") for line in outcome["payload"]["lines"])
+        self.assertIn("fiabilidad incremental", repaired_text)
+        self.assertNotIn("nos quedamos con dos ideas accionables", repaired_text.lower())
 
     def test_attempt_script_quality_repair_deterministically_fixes_speaker_runs(self) -> None:
         cfg = ScriptQualityGateConfig.from_env(profile_name="short")

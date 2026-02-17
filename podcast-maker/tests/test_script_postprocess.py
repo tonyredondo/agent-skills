@@ -14,6 +14,7 @@ from pipeline.script_postprocess import (  # noqa: E402
     evaluate_script_completeness,
     ensure_farewell_close,
     ensure_recap_near_end,
+    ensure_tail_questions_answered,
     fix_mid_farewells,
     harden_script_structure,
     normalize_block_numbering,
@@ -198,6 +199,30 @@ class ScriptPostprocessTests(unittest.TestCase):
         ]
         out = ensure_farewell_close(lines)
         self.assertIn("Thank you for listening", out[-1]["text"])
+
+    def test_ensure_tail_questions_answered_inserts_counterpart_response(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Hoy revisamos decisiones tecnicas y riesgos de despliegue."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Entonces, te parece mejor priorizar fiabilidad o velocidad ahora?"},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "En resumen, conviene cerrar cada cambio con evidencia clara."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Gracias por escuchar, nos vemos en la proxima entrega."},
+        ]
+        out = ensure_tail_questions_answered(lines)
+        self.assertEqual(len(out), len(lines) + 1)
+        self.assertEqual(out[2]["role"], "Host1")
+        self.assertIn("buena pregunta", out[2]["text"].lower())
+        self.assertEqual(out[3]["text"], lines[2]["text"])
+
+    def test_ensure_tail_questions_answered_skips_when_question_already_answered(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Hoy revisamos decisiones tecnicas y riesgos de despliegue."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Entonces, te parece mejor priorizar fiabilidad o velocidad ahora?"},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Si, porque la fiabilidad evita retrabajo y mantiene consistencia de cierre."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "En resumen, priorizamos estabilidad con iteraciones medibles."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos, nos vemos en el proximo episodio."},
+        ]
+        out = ensure_tail_questions_answered(lines)
+        self.assertEqual(out, lines)
 
     def test_sanitize_meta_podcast_language_rewrites_document_phrases(self) -> None:
         lines = [
