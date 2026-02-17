@@ -1,3 +1,11 @@
+"""Regression tests for interruption, fallback, and quality-gate entrypoint behavior.
+
+These tests intentionally exercise failure paths that are hard to reproduce in
+end-to-end runs (interruptions, stale summaries, resume mismatches, and gate
+enforcement). The goal is to keep run-summary/manifest semantics stable for
+operators and orchestrated retry logic.
+"""
+
 import argparse
 import dataclasses
 import json
@@ -31,6 +39,8 @@ from pipeline.errors import (  # noqa: E402
 
 
 class _FakeClient:
+    """Minimal client double exposing counters consumed by entrypoints."""
+
     requests_made = 0
     estimated_cost_usd = 0.0
     script_retries_total = 0
@@ -39,6 +49,8 @@ class _FakeClient:
 
 
 class _RepairingScriptClient(_FakeClient):
+    """Returns a complete recap+farewell script for successful auto-repair paths."""
+
     def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
         return {
             "lines": [
@@ -59,6 +71,8 @@ class _RepairingScriptClient(_FakeClient):
 
 
 class _RepairStillFailClient(_FakeClient):
+    """Returns an intentionally incomplete correction to keep gate failing."""
+
     def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
         return {
             "lines": [
@@ -73,11 +87,15 @@ class _RepairStillFailClient(_FakeClient):
 
 
 class _RepairThrowsClient(_FakeClient):
+    """Raises during repair to validate revert-to-original behavior."""
+
     def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
         raise RuntimeError("repair failed")
 
 
 class EntryPointInterruptionTests(unittest.TestCase):
+    """Coverage for entrypoint-level resilience and fallback contracts."""
+
     def test_make_script_default_gate_action_aligns_with_profile(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
@@ -258,6 +276,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             client.script_retries_total = 1
 
             def _interrupt_with_summary(**kwargs):  # noqa: ANN003, ANN201
+                # Simulate generator writing a current-token summary before an
+                # interruption, so make_script.main can source structured signals.
                 output_path = kwargs["output_path"]
                 run_token = kwargs.get("run_token")
                 episode_id = os.path.splitext(os.path.basename(output_path))[0] or "episode"
@@ -309,6 +329,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                 ):
                                                     rc = make_script.main()
             self.assertEqual(rc, 130)
+            # SLO emission should reflect structured summary fields, not only the
+            # generic InterruptedError type.
             self.assertEqual(float(append_slo.call_args.kwargs.get("retry_rate")), 0.25)
             self.assertTrue(bool(append_slo.call_args.kwargs.get("invalid_schema")))
             self.assertTrue(bool(append_slo.call_args.kwargs.get("stuck_abort")))
@@ -424,6 +446,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             run_dir = os.path.join(script_cfg.checkpoint_dir, "episode")
             os.makedirs(run_dir, exist_ok=True)
             with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as f:
+                # Seed a stale token: runtime must ignore these signals and
+                # recompute failure classification for the current run.
                 json.dump(
                     {
                         "status": "failed",
@@ -445,6 +469,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                         ):
                             rc = make_script.main()
             self.assertEqual(rc, 1)
+            # Structured flags should not leak from stale-token summaries.
             self.assertFalse(bool(append_slo.call_args.kwargs.get("stuck_abort")))
             self.assertFalse(bool(append_slo.call_args.kwargs.get("invalid_schema")))
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_UNKNOWN)
@@ -494,6 +519,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertTrue(os.path.exists(summary_path))
             with open(summary_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
+            # Even early I/O failures must emit a fallback run summary artifact.
             self.assertEqual(payload.get("component"), "make_script")
             self.assertEqual(payload.get("status"), "failed")
             self.assertEqual(payload.get("failure_kind"), ERROR_KIND_UNKNOWN)
@@ -545,6 +571,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                     return_value=_FakeClient(),
                                 ):
                                     fake_generator = mock.Mock()
+                                    # Simulate generator failing before writing
+                                    # run_summary so make_script must synthesize fallback.
                                     fake_generator.generate.side_effect = make_script.ScriptOperationError(
                                         "Resume blocked in generator",
                                         error_kind=ERROR_KIND_RESUME_BLOCKED,
@@ -570,6 +598,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertTrue(os.path.exists(summary_path))
             with open(summary_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
+            # Fallback summary still keeps the precise operation failure kind.
             self.assertEqual(payload.get("status"), "failed")
             self.assertEqual(payload.get("failure_kind"), ERROR_KIND_RESUME_BLOCKED)
             self.assertTrue(str(payload.get("run_token", "")).strip())
@@ -885,6 +914,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
             audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
             os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+            # Seed an original script artifact so we can verify warn-mode repair
+            # does not corrupt successful existing content on failed corrections.
             with open(args.output_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
@@ -944,6 +975,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                             "from_configs",
                                             return_value=_RepairStillFailClient(),
                                         ):
+                                            # Repair client returns still-failing
+                                            # payloads to force warn-path fallback.
                                             fake_generator = mock.Mock()
                                             fake_generator.generate.return_value = fake_result
                                             with mock.patch.object(
@@ -961,6 +994,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             with open(args.output_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             text = payload["lines"][0]["text"]
+            # Original content remains unchanged when warn-mode repair cannot
+            # produce a valid improved script.
             self.assertEqual(text, "Texto corto original")
             with open(checkpoint_path, "r", encoding="utf-8") as f:
                 checkpoint_payload = json.load(f)
@@ -972,6 +1007,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertEqual(summary_payload.get("status"), "completed")
             self.assertEqual(summary_payload.get("script_gate_action_effective"), "warn")
             self.assertTrue(bool(summary_payload.get("quality_gate_executed")))
+            # Script-only entrypoint should never mark audio handoff fields.
             self.assertFalse(bool(summary_payload.get("handoff_to_audio_started")))
             self.assertFalse(bool(summary_payload.get("handoff_to_audio_completed")))
 
@@ -1566,6 +1602,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                             fake_mixer.check_dependencies.return_value = None
                             with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                                 fake_synth = mock.Mock()
+                                # Batch error with timeout kind should propagate
+                                # as structured failure_kind/stuck_abort telemetry.
                                 fake_synth.synthesize.side_effect = TTSBatchError(
                                     manifest_path=os.path.join(outdir, ".audio_checkpoints", "episode", "audio_manifest.json"),
                                     failed_segments=[{"segment_id": "0001"}],
@@ -1768,6 +1806,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                             fake_mixer.check_dependencies.return_value = None
                             with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                                 fake_synth = mock.Mock()
+                                # Resume-blocked failures are operationally
+                                # actionable but must not be labeled as "stuck".
                                 fake_synth.synthesize.side_effect = TTSOperationError(
                                     "Resume blocked: audio config fingerprint changed",
                                     error_kind=ERROR_KIND_RESUME_BLOCKED,
@@ -1861,6 +1901,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                 },
                 clear=False,
             ):
+                # Manifest path mismatch should fail before any expensive audio
+                # stage work begins.
                 with mock.patch.object(make_podcast, "parse_args", return_value=args):
                     with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
                         with mock.patch.object(
@@ -1941,6 +1983,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                             ):
                                                 rc = make_podcast.main()
             self.assertEqual(rc, 4)
+            # Enforce mode blocks all downstream audio stages when quality fails.
             mixer_cls.assert_not_called()
             synth_cls.assert_not_called()
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
@@ -2042,6 +2085,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                             ):
                                                 rc = make_podcast.main()
             self.assertEqual(rc, 0)
+            # Warn mode keeps pipeline moving even when quality report fails.
             self.assertTrue(fake_synth.synthesize.called)
             self.assertIsNone(append_slo.call_args.kwargs.get("failure_kind"))
             summary_path = os.path.join(checkpoint_dir, "podcast_run_summary.json")
@@ -2139,6 +2183,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                 ):
                                                     rc = make_podcast.main()
             self.assertEqual(rc, 0)
+            # Gate-off mode should never invoke quality evaluator.
             eval_quality.assert_not_called()
             summary_path = os.path.join(checkpoint_dir, "podcast_run_summary.json")
             self.assertTrue(os.path.exists(summary_path))
