@@ -87,6 +87,28 @@ class AudioMixerHelpersTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmp, ".episode.norm.tmp.mp3")))
             self.assertFalse(os.path.exists(os.path.join(tmp, ".episode.final.tmp.mp3")))
 
+    def test_concat_copy_writes_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            seg_abs = os.path.join(tmp, "seg.mp3")
+            with open(seg_abs, "wb") as f:
+                f.write(b"ID3")
+            seg_rel = os.path.relpath(seg_abs, start=os.getcwd())
+            out_path = os.path.join(tmp, "out.mp3")
+            mixer = AudioMixer(config=AudioConfig.from_env(profile_name="short"), logger=self.logger)
+            captured: dict[str, str] = {}
+
+            def fake_run(command, logger, *, allow_failure=False):  # noqa: ANN001
+                del logger, allow_failure
+                concat_path = command[command.index("-i") + 1]
+                with open(concat_path, "r", encoding="utf-8") as fh:
+                    captured["concat"] = fh.read()
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+            with mock.patch("pipeline.audio_mixer._run", side_effect=fake_run):
+                mixer._concat_copy([seg_rel], out_path)
+
+            self.assertIn(_ffconcat_line(os.path.abspath(seg_rel)).strip(), captured.get("concat", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,7 +92,7 @@ class AudioMixer:
             concat_file = os.path.join(tmp, "concat.txt")
             with open(concat_file, "w", encoding="utf-8") as f:
                 for path in files:
-                    f.write(_ffconcat_line(path))
+                    f.write(_ffconcat_line(os.path.abspath(path)))
             cmd = [
                 "ffmpeg",
                 "-hide_banner",
