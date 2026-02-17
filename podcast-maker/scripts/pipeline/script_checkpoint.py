@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Script checkpoint persistence with lock ownership and resume validation."""
+
 import json
 import os
 import re
@@ -14,10 +16,13 @@ from .config import ReliabilityConfig
 
 
 class LockError(RuntimeError):
+    """Raised when checkpoint lock cannot be safely acquired."""
+
     pass
 
 
 def _parse_version(value: Any) -> Tuple[int, int]:
+    """Parse `major.minor` version values into integer tuple."""
     if isinstance(value, int):
         return value, 0
     if isinstance(value, str):
@@ -30,6 +35,7 @@ def _parse_version(value: Any) -> Tuple[int, int]:
 
 
 def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
+    """Write JSON atomically to avoid partial checkpoint files."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -39,6 +45,7 @@ def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
 
 
 def _atomic_create_json(path: str, payload: Dict[str, Any]) -> None:
+    """Create JSON file atomically and fail if path already exists."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     fd = os.open(path, flags, 0o644)
@@ -49,6 +56,8 @@ def _atomic_create_json(path: str, payload: Dict[str, Any]) -> None:
 
 @dataclass
 class ScriptCheckpointStore:
+    """Owns script checkpoint files, lock lifecycle, and resume checks."""
+
     base_dir: str
     episode_id: str
     reliability: ReliabilityConfig
@@ -59,6 +68,7 @@ class ScriptCheckpointStore:
     _lock_heartbeat_thread: Optional[threading.Thread] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Initialize run-scoped paths for this episode."""
         os.makedirs(self.base_dir, exist_ok=True)
         self.run_dir = os.path.join(self.base_dir, self.episode_id)
         os.makedirs(self.run_dir, exist_ok=True)
@@ -66,9 +76,11 @@ class ScriptCheckpointStore:
         self.lock_path = os.path.join(self.run_dir, ".lock")
 
     def _heartbeat_interval_seconds(self) -> float:
+        """Return lock heartbeat interval derived from lock TTL."""
         return float(max(1, min(30, int(self.reliability.lock_ttl_seconds / 3))))
 
     def _stop_lock_heartbeat(self) -> None:
+        """Stop and join lock heartbeat thread if running."""
         stop = self._lock_heartbeat_stop
         thread = self._lock_heartbeat_thread
         self._lock_heartbeat_stop = None
@@ -79,6 +91,7 @@ class ScriptCheckpointStore:
             thread.join(timeout=1.0)
 
     def _refresh_lock_timestamp(self) -> None:
+        """Refresh lock file mtime when current process still owns token."""
         token = self._lock_token
         if not token:
             return
@@ -96,10 +109,12 @@ class ScriptCheckpointStore:
             return
 
     def _lock_heartbeat_loop(self, stop: threading.Event, interval_s: float) -> None:
+        """Periodic lock timestamp refresher loop."""
         while not stop.wait(interval_s):
             self._refresh_lock_timestamp()
 
     def _start_lock_heartbeat(self) -> None:
+        """Start daemon thread that refreshes lock ownership timestamp."""
         self._stop_lock_heartbeat()
         stop = threading.Event()
         thread = threading.Thread(
@@ -113,6 +128,7 @@ class ScriptCheckpointStore:
         thread.start()
 
     def acquire_lock(self, force_unlock: bool = False) -> None:
+        """Acquire exclusive checkpoint lock, honoring TTL/force-unlock."""
         self._stop_lock_heartbeat()
         self._lock_token = None
         while True:
@@ -125,6 +141,8 @@ class ScriptCheckpointStore:
                 self._start_lock_heartbeat()
                 return
             except FileExistsError:
+                # Lock already exists: inspect owner metadata and decide whether
+                # to wait/fail or reclaim stale lock.
                 try:
                     with open(self.lock_path, "r", encoding="utf-8") as f:
                         lock_data = json.load(f)
@@ -169,6 +187,7 @@ class ScriptCheckpointStore:
                     lock_mtime = ts
                 age = now - max(ts, lock_mtime)
                 if force_unlock or age > self.reliability.lock_ttl_seconds:
+                    # Reclaim stale lock and retry atomically.
                     try:
                         os.remove(self.lock_path)
                     except OSError:
@@ -179,6 +198,7 @@ class ScriptCheckpointStore:
                 raise LockError(f"Checkpoint lock active (pid={owner}, age={age}s)")
 
     def release_lock(self) -> None:
+        """Release lock only when token still belongs to this process."""
         token = self._lock_token
         self._lock_token = None
         self._stop_lock_heartbeat()
@@ -197,6 +217,7 @@ class ScriptCheckpointStore:
             pass
 
     def load(self) -> Optional[Dict[str, Any]]:
+        """Load checkpoint; quarantine corrupt payloads when unreadable."""
         self.last_corrupt_backup_path = None
         self.last_corrupt_error = ""
         if not os.path.exists(self.checkpoint_path):
@@ -216,6 +237,7 @@ class ScriptCheckpointStore:
             return None
 
     def save(self, state: Dict[str, Any]) -> None:
+        """Persist current checkpoint state."""
         _atomic_write_json(self.checkpoint_path, state)
 
     def create_initial_state(
@@ -224,6 +246,7 @@ class ScriptCheckpointStore:
         source_hash: str,
         config_fingerprint: str,
     ) -> Dict[str, Any]:
+        """Create initial checkpoint payload for a new generation run."""
         return {
             "checkpoint_version": self.reliability.checkpoint_version,
             "episode_id": self.episode_id,
@@ -244,6 +267,7 @@ class ScriptCheckpointStore:
         config_fingerprint: str,
         resume_force: bool,
     ) -> bool:
+        """Validate checkpoint compatibility for resume semantics."""
         if not state or not isinstance(state, dict):
             raise RuntimeError("Invalid checkpoint state for resume")
         current_version = self.reliability.checkpoint_version

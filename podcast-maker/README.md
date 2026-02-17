@@ -1,5 +1,7 @@
 # Podcast Maker
 
+[![Podcast Maker Tests](https://github.com/tonyredondo/agent-skills/actions/workflows/podcast-maker-tests.yml/badge.svg)](https://github.com/tonyredondo/agent-skills/actions/workflows/podcast-maker-tests.yml)
+
 This document describes the production pipeline for script and audio generation.
 
 ## Prerequisites
@@ -69,12 +71,14 @@ flowchart LR
 ./scripts/run_podcast.py --profile standard input.txt outdir episode_name
 ./scripts/make_script.py --profile standard input.txt script.json
 ./scripts/make_podcast.py --profile standard script.json outdir episode_name
+./scripts/make_podcast.sh script.json outdir episode_name --profile standard --resume
 ```
 
 `make_podcast.py` accepts an optional third positional argument (`basename`) and defaults to `episode` if omitted.
 `basename` must be a plain file name (no path separators like `/` or `../`).
 Both entrypoints accept `--episode-id` to force a stable run identity across script/audio stages.
 When using separate commands, pass the same `--episode-id` to both for clean handoff and artifact grouping.
+`make_podcast.sh` is the official wrapper for portable invocation and forwards extra flags to `make_podcast.py`.
 Use only flags shown in each script `--help`.
 
 ## Script quality gate (pre-audio)
@@ -108,7 +112,11 @@ Use only flags shown in each script `--help`.
 
 Gate artifacts:
 
-- `<audio_checkpoint_dir>/<episode>/quality_report.json`
+- script-stage:
+  - `<script_checkpoint_dir>/<episode>/quality_report_initial.json`
+  - `<script_checkpoint_dir>/<episode>/quality_report.json`
+- audio-stage:
+  - `<audio_checkpoint_dir>/<episode>/quality_report.json`
 - on success, `podcast_run_summary.json` includes `quality_gate_pass` and `quality_report_path`
 
 Recommended preset for production strictness:
@@ -178,6 +186,8 @@ Common flags:
 
 Common environment variables:
 
+- Canonical reference: `ENV_REFERENCE.md` (single source for defaults from `config.py` + entrypoints)
+
 - Logging: `LOG_LEVEL`, `LOG_HEARTBEAT_SECONDS`, `LOG_DEBUG_EVENTS`
 - Models: `SCRIPT_MODEL`/`MODEL`, `TTS_MODEL`
 - Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
@@ -188,6 +198,11 @@ Common environment variables:
   - `SCRIPT_CLOSING_STYLE=brief|warm` (default `brief`)
   - `SCRIPT_STRICT_HOST_ALTERNATION=0|1` (default `1`; enforces strict Host1/Host2 alternation)
 - Script retries/timeouts: `SCRIPT_RETRIES`, `SCRIPT_TIMEOUT_SECONDS`
+- Script orchestrated retries (entrypoint-level):
+  - `SCRIPT_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+  - `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+  - `SCRIPT_ORCHESTRATED_RETRY_BACKOFF_MS` (default `400`)
+  - `SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS` (default `openai_empty_output,invalid_schema,script_quality_rejected,script_completeness_failed`)
 - Adaptive script defaults (enabled by default): `SCRIPT_ADAPTIVE_DEFAULTS=0|1`
 - Script pre-summary: `SCRIPT_PRE_SUMMARY_TRIGGER_WORDS`, `SCRIPT_PRE_SUMMARY_TARGET_WORDS`, `SCRIPT_PRE_SUMMARY_MAX_ROUNDS`
 - Script pre-summary parallelization: `SCRIPT_PRESUMMARY_PARALLEL=0|1`, `SCRIPT_PRESUMMARY_PARALLEL_WORKERS`
@@ -247,6 +262,13 @@ Common environment variables:
   - `SCRIPT_QUALITY_REQUIRE_SUMMARY`, `SCRIPT_QUALITY_REQUIRE_CLOSING`
   - `SCRIPT_QUALITY_MIN_OVERALL_SCORE`, `SCRIPT_QUALITY_MIN_CADENCE_SCORE`, `SCRIPT_QUALITY_MIN_LOGIC_SCORE`, `SCRIPT_QUALITY_MIN_CLARITY_SCORE`
   - `SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS` (default `1400`), `SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS`
+- Audio orchestrated retries (entrypoint-level):
+  - `AUDIO_ORCHESTRATED_RETRY_ENABLED=0|1` (default `1`)
+  - `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` (default `2`)
+  - `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` (default `1200`)
+  - `AUDIO_ORCHESTRATED_RETRY_FAILURE_KINDS` (default `timeout,network,rate_limit`)
+- Full orchestrator:
+  - `RUN_PODCAST_SCRIPT_ATTEMPTS` (default `1`, retries script stage in `run_podcast.py`)
 - Audio fallback: `ALLOW_RAW_ONLY=1`
 - Cleanup/retention: `RETENTION_CHECKPOINT_DAYS`, `RETENTION_LOG_DAYS`, `RETENTION_INTERMEDIATE_AUDIO_DAYS`
 - Disk/budget guardrails: `MIN_FREE_DISK_MB`, `MAX_CHECKPOINT_STORAGE_MB`, `MAX_LOG_STORAGE_MB`, `MAX_REQUESTS_PER_RUN`, `MAX_ESTIMATED_COST_USD`
@@ -315,6 +337,12 @@ Run before promoting rollout stages:
 python3 ./scripts/run_golden_pipeline.py --candidate-dir ./.golden_candidates
 python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates
 ```
+
+Notes:
+
+- `run_golden_pipeline.py` requires valid OpenAI credentials and sources that satisfy current source-validation policy for requested targets.
+- When local auth/network or source sizing constraints block candidate generation, use fixture fallback in the checker for deterministic structural regression validation:
+  - `python3 ./scripts/check_golden_suite.py --allow-fixture-fallback`
 
 Useful options:
 

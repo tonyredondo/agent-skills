@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Deterministic post-processing for generated podcast scripts."""
+
 import re
 import unicodedata
 from typing import Dict, List, Tuple
@@ -150,6 +152,7 @@ SPANISH_TECH_TERM_REPLACEMENTS = (
 
 
 def _normalized_text(value: str) -> str:
+    """Normalize text for robust token/pattern matching."""
     lowered = str(value or "").strip().lower()
     deaccented = "".join(
         ch for ch in unicodedata.normalize("NFKD", lowered) if not unicodedata.combining(ch)
@@ -158,6 +161,7 @@ def _normalized_text(value: str) -> str:
 
 
 def _contains_non_latin_letters(value: str) -> bool:
+    """Return True when text includes non-Latin alphabet letters."""
     for ch in str(value or ""):
         if not ch.isalpha():
             continue
@@ -168,11 +172,13 @@ def _contains_non_latin_letters(value: str) -> bool:
 
 
 def _is_farewell(text: str) -> bool:
+    """Detect whether a line is a farewell/closing utterance."""
     t = _normalized_text(text)
     return any(p in t for p in FAREWELL_PATTERNS)
 
 
 def _infer_language_hint(lines: List[Dict[str, str]]) -> str:
+    """Infer coarse language hint from early dialogue lines."""
     text = " ".join(_normalized_text(str(line.get("text") or "")) for line in lines[:12])
     raw_text = " ".join(str(line.get("text") or "") for line in lines[:12])
     best_lang = "es"
@@ -192,6 +198,7 @@ def _infer_language_hint(lines: List[Dict[str, str]]) -> str:
 
 
 def _resolve_language_hint(lines: List[Dict[str, str]], language_hint: str | None) -> str:
+    """Resolve explicit language hint or infer from content."""
     hint = str(language_hint or "").strip().lower()
     if hint in {"es", "en", "pt", "fr"}:
         return hint
@@ -199,6 +206,7 @@ def _resolve_language_hint(lines: List[Dict[str, str]], language_hint: str | Non
 
 
 def _line_opening_token(text: str) -> str:
+    """Extract normalized first spoken token from a line."""
     match = SPANISH_OPENING_WORD_RE.match(str(text or ""))
     if match is None:
         return ""
@@ -210,6 +218,7 @@ def normalize_spanish_technical_terms(
     *,
     language_hint: str | None = None,
 ) -> List[Dict[str, str]]:
+    """Normalize known Spanish technical term preferences."""
     out = [dict(line) for line in lines]
     if _resolve_language_hint(out, language_hint) != "es":
         return out
@@ -230,6 +239,7 @@ def diversify_repetitive_openers(
     *,
     language_hint: str | None = None,
 ) -> List[Dict[str, str]]:
+    """Reduce repetitive Spanish line-openers for better cadence."""
     out = [dict(line) for line in lines]
     if _resolve_language_hint(out, language_hint) != "es":
         return out
@@ -263,6 +273,7 @@ def diversify_repetitive_openers(
 
 
 def _canonical_speaker_map(lines: List[Dict[str, str]]) -> Dict[str, str]:
+    """Build canonical speaker names for Host1/Host2 roles."""
     by_role: Dict[str, str] = {}
     fallback_names: List[str] = []
     for idx, line in enumerate(lines):
@@ -297,6 +308,7 @@ def normalize_speaker_turns(
     *,
     max_consecutive_same_speaker: int = 2,
 ) -> List[Dict[str, str]]:
+    """Normalize role/speaker fields and enforce alternation limits."""
     if not lines:
         return []
     out = [dict(line) for line in lines]
@@ -328,6 +340,7 @@ def normalize_speaker_turns(
 
 
 def fix_mid_farewells(lines: List[Dict[str, str]], *, language_hint: str | None = None) -> List[Dict[str, str]]:
+    """Replace premature farewells with neutral bridge transitions."""
     out = [dict(line) for line in lines]
     resolved_lang = _resolve_language_hint(out, language_hint)
     bridge_templates = BRIDGE_BY_LANG.get(resolved_lang, BRIDGE_BY_LANG["es"])
@@ -341,6 +354,7 @@ def fix_mid_farewells(lines: List[Dict[str, str]], *, language_hint: str | None 
 
 
 def dedupe_append(base_lines: List[Dict[str, str]], new_lines: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], int]:
+    """Append only non-duplicate lines and return (merged, added_count)."""
     seen = {dedupe_key(line) for line in base_lines}
     out = list(base_lines)
     added = 0
@@ -355,6 +369,7 @@ def dedupe_append(base_lines: List[Dict[str, str]], new_lines: List[Dict[str, st
 
 
 def ensure_en_resumen(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Ensure recap line is present near the script ending."""
     if not lines:
         return lines
     has_summary = any(
@@ -387,6 +402,7 @@ def ensure_en_resumen(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 
 def ensure_farewell_last(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Ensure the final spoken turn is a complete farewell line."""
     if not lines:
         return lines
     out = list(lines)
@@ -420,6 +436,7 @@ def ensure_farewell_last(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 
 def normalize_block_numbering(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Normalize spoken block numbering to sequential order."""
     out = [dict(line) for line in lines]
     occurrences: List[Tuple[int, int]] = []
     for idx, line in enumerate(out):
@@ -475,6 +492,7 @@ def normalize_block_numbering(lines: List[Dict[str, str]]) -> List[Dict[str, str
 
 
 def sanitize_abrupt_tail(lines: List[Dict[str, str]], *, tail_window: int = 8) -> List[Dict[str, str]]:
+    """Sanitize abrupt punctuation/connectors near script tail."""
     out = [dict(line) for line in lines]
     start = max(0, len(out) - max(1, int(tail_window)))
     for idx in range(start, len(out)):
@@ -489,6 +507,7 @@ def sanitize_abrupt_tail(lines: List[Dict[str, str]], *, tail_window: int = 8) -
 
 
 def _sanitize_tail_text(text: str) -> str:
+    """Repair one possibly-abrupt tail text fragment."""
     updated = str(text or "")
     if ELLIPSIS_RE.search(updated):
         updated = ELLIPSIS_RE.sub(".", updated)
@@ -499,6 +518,7 @@ def _sanitize_tail_text(text: str) -> str:
 
 
 def _is_complete_sentence(text: str) -> bool:
+    """Return True when text appears to end as a complete sentence."""
     sample = str(text or "").strip()
     if not sample:
         return False
@@ -506,6 +526,7 @@ def _is_complete_sentence(text: str) -> bool:
 
 
 def detect_truncation_indices(lines: List[Dict[str, str]]) -> List[int]:
+    """Return line indices that still look truncated."""
     out: List[int] = []
     for idx, line in enumerate(lines):
         text = str(line.get("text") or "").strip()
@@ -513,13 +534,11 @@ def detect_truncation_indices(lines: List[Dict[str, str]]) -> List[int]:
             continue
         if TAIL_TRUNCATION_RE.search(text):
             out.append(idx)
-            continue
-        if idx == (len(lines) - 1) and not _is_complete_sentence(text):
-            out.append(idx)
     return out
 
 
 def evaluate_script_completeness(lines: List[Dict[str, str]]) -> Dict[str, object]:
+    """Evaluate deterministic completeness conditions and reasons."""
     truncation_indices = detect_truncation_indices(lines)
     reasons: List[str] = []
     if truncation_indices:
@@ -555,6 +574,7 @@ def repair_script_completeness(
     *,
     max_consecutive_same_speaker: int = 2,
 ) -> List[Dict[str, str]]:
+    """Run deterministic repair chain for completeness issues."""
     normalized_turns = normalize_speaker_turns(
         lines,
         max_consecutive_same_speaker=max_consecutive_same_speaker,
@@ -570,6 +590,7 @@ def harden_script_structure(
     *,
     max_consecutive_same_speaker: int = 2,
 ) -> List[Dict[str, str]]:
+    """Run structural hardening chain shared across pipeline stages."""
     normalized_turns = normalize_speaker_turns(
         lines,
         max_consecutive_same_speaker=max_consecutive_same_speaker,

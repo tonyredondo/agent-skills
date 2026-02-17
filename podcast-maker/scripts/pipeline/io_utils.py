@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""I/O helpers shared by pipeline entrypoints."""
+
 from typing import Callable, Optional, Tuple
 
 
@@ -9,6 +11,10 @@ def read_text_file_with_fallback(
     *,
     on_fallback: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, str]:
+    """Read text file trying a safe sequence of fallback encodings.
+
+    Returns `(content, encoding_used)`.
+    """
     encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
     last_exc: Exception | None = None
     for enc in encodings:

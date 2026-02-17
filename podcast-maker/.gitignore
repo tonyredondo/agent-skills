@@ -11,3 +11,5 @@ __pycache__/
 .DS_Store
 *.cover
 *.tmp.mp3
+tmp_smoke_*/
+tmp_debug_*/

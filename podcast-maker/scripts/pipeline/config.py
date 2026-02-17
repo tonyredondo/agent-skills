@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Centralized runtime configuration for podcast-maker pipeline.
+
+This module maps environment variables and optional CLI overrides into typed
+dataclasses used by script/audio/orchestration components.
+"""
+
 import dataclasses
 import hashlib
 import json
@@ -11,11 +17,13 @@ from typing import Any, Dict, Optional
 
 
 def _env_str(name: str, default: str) -> str:
+    """Read string env var with trim + default fallback."""
     v = os.environ.get(name)
     return default if v is None else str(v).strip()
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with defensive fallback."""
     v = os.environ.get(name)
     if v is None or str(v).strip() == "":
         return default
@@ -26,6 +34,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
+    """Read finite float env var with defensive fallback."""
     v = os.environ.get(name)
     if v is None or str(v).strip() == "":
         return default
@@ -39,6 +48,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_bool(name: str, default: bool) -> bool:
+    """Read boolean env var from common truthy literals."""
     v = os.environ.get(name)
     if v is None:
         return default
@@ -46,18 +56,22 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _coalesce(value: Any, fallback: Any) -> Any:
+    """Return fallback when value is None."""
     return fallback if value is None else value
 
 
 def _clamp_float(value: float, low: float, high: float) -> float:
+    """Clamp float to inclusive range."""
     return max(low, min(high, value))
 
 
 def _clamp_int(value: int, low: int, high: int) -> int:
+    """Clamp integer to inclusive range."""
     return max(low, min(high, value))
 
 
 def _default_source_validation_policy(*, profile_name: str, target_minutes: float) -> tuple[str, float, float]:
+    """Return default source-validation policy by profile/duration."""
     normalized = str(profile_name or "standard").strip().lower()
     minutes = max(1.0, float(target_minutes))
     if normalized == "long" or minutes >= 25.0:
@@ -69,6 +83,8 @@ def _default_source_validation_policy(*, profile_name: str, target_minutes: floa
 
 @dataclass(frozen=True)
 class DurationProfile:
+    """Profile defaults used to derive script/audio runtime tuning."""
+
     name: str
     default_target_minutes: float
     chunk_target_minutes: float
@@ -114,12 +130,15 @@ PROFILE_DEFAULTS: Dict[str, DurationProfile] = {
 
 
 def resolve_profile(profile_name: str) -> DurationProfile:
+    """Resolve known duration profile, defaulting to standard."""
     normalized = (profile_name or "standard").strip().lower()
     return PROFILE_DEFAULTS.get(normalized, PROFILE_DEFAULTS["standard"])
 
 
 @dataclass(frozen=True)
 class LoggingConfig:
+    """Logging behavior used by `Logger`."""
+
     level: str
     heartbeat_seconds: int
     debug_events: bool
@@ -127,6 +146,7 @@ class LoggingConfig:
 
     @staticmethod
     def from_env() -> "LoggingConfig":
+        """Build logging config from environment."""
         return LoggingConfig(
             level=_env_str("LOG_LEVEL", "INFO").upper(),
             heartbeat_seconds=max(1, _env_int("LOG_HEARTBEAT_SECONDS", 15)),
@@ -137,6 +157,8 @@ class LoggingConfig:
 
 @dataclass(frozen=True)
 class ReliabilityConfig:
+    """Cross-cutting reliability and retention configuration."""
+
     checkpoint_version: int
     lock_ttl_seconds: int
     max_requests_per_run: int
@@ -151,6 +173,7 @@ class ReliabilityConfig:
 
     @staticmethod
     def from_env() -> "ReliabilityConfig":
+        """Build reliability config from environment."""
         return ReliabilityConfig(
             checkpoint_version=_env_int("CHECKPOINT_VERSION", 3),
             lock_ttl_seconds=max(60, _env_int("LOCK_TTL_SECONDS", 1800)),
@@ -168,6 +191,8 @@ class ReliabilityConfig:
 
 @dataclass(frozen=True)
 class ScriptConfig:
+    """Script-generation specific runtime configuration."""
+
     model: str
     profile_name: str
     target_minutes: float
@@ -208,6 +233,7 @@ class ScriptConfig:
         max_words: Optional[int] = None,
         profile_name: Optional[str] = None,
     ) -> "ScriptConfig":
+        """Build script config from env and optional CLI overrides."""
         requested_profile = _coalesce(profile_name, _env_str("PODCAST_DURATION_PROFILE", "standard"))
         profile = resolve_profile(requested_profile)
 
@@ -224,6 +250,8 @@ class ScriptConfig:
 
         adaptive_defaults_enabled = _env_bool("SCRIPT_ADAPTIVE_DEFAULTS", True)
         if adaptive_defaults_enabled:
+            # Scale generation defaults with target duration to keep behavior
+            # stable across short/standard/long episodes.
             chunk_target_default = _clamp_float(1.4 + (resolved_target * 0.05), 1.4, 3.8)
             max_context_default = _clamp_int(int(round(10 + (resolved_target * 0.7))), 10, 44)
             max_continuations_default = _clamp_int(int(round(2 + (resolved_target / 20.0))), 2, 7)
@@ -349,6 +377,8 @@ class ScriptConfig:
 
 @dataclass(frozen=True)
 class AudioConfig:
+    """Audio synthesis/mixing runtime configuration."""
+
     model: str
     timeout_seconds: int
     retries: int
@@ -376,10 +406,12 @@ class AudioConfig:
 
     @staticmethod
     def from_env(*, profile_name: Optional[str] = None) -> "AudioConfig":
+        """Build audio config from env and optional profile override."""
         profile = resolve_profile(_coalesce(profile_name, _env_str("PODCAST_DURATION_PROFILE", "standard")))
         tts_speed_default = _clamp_float(_env_float("TTS_SPEED_DEFAULT", 1.0), 0.25, 4.0)
 
         def _read_tts_speed(name: str, missing_default: float) -> float:
+            """Read bounded TTS speed value with sensible fallback."""
             raw = os.environ.get(name)
             if raw is None or str(raw).strip() == "":
                 return _clamp_float(float(missing_default), 0.25, 4.0)
@@ -426,6 +458,7 @@ class AudioConfig:
 
 
 def fingerprint_dict(value: Dict[str, Any]) -> str:
+    """Return stable SHA-256 hash for a dictionary payload."""
     encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -436,6 +469,7 @@ def config_fingerprint(
     reliability_cfg: Optional[ReliabilityConfig] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> str:
+    """Build a composite fingerprint across config sections."""
     payload: Dict[str, Any] = {}
     if script_cfg is not None:
         payload["script"] = dataclasses.asdict(script_cfg)

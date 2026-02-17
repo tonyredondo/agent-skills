@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Orchestrate the full podcast pipeline (script -> audio).
+
+This entrypoint keeps a shared `episode_id` and `run_token` across both
+stages so manifests, checkpoints, and summaries remain correlated even when
+retries or resumes happen.
+"""
+
 import argparse
 import os
 import sys
@@ -12,6 +19,10 @@ from pipeline.run_manifest import resolve_episode_id
 
 
 def _basename_arg(value: str) -> str:
+    """Validate CLI basename/episode arguments.
+
+    The value must be a plain filename token, never a path.
+    """
     name = str(value).strip()
     if not name:
         raise argparse.ArgumentTypeError("name must not be empty")
@@ -21,6 +32,7 @@ def _basename_arg(value: str) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the orchestrator."""
     parser = argparse.ArgumentParser(
         description="Run full podcast pipeline (script + audio) with shared run identity.",
     )
@@ -52,6 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _append_optional(argv: list[str], flag: str, value: object | None) -> None:
+    """Append a `--flag value` pair only when value is present."""
     if value is None:
         return
     text = str(value).strip()
@@ -61,6 +74,7 @@ def _append_optional(argv: list[str], flag: str, value: object | None) -> None:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read an integer env var with a safe fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -71,6 +85,11 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _latest_script_failure_kind(*, episode_id: str, expected_run_token: str) -> str:
+    """Read script failure kind from run summary for retry decisions.
+
+    The run token check prevents mixing signals from a previous run of the
+    same episode id.
+    """
     script_checkpoint_dir = str(os.environ.get("SCRIPT_CHECKPOINT_DIR", "./.script_checkpoints") or "").strip()
     if not script_checkpoint_dir:
         script_checkpoint_dir = "./.script_checkpoints"
@@ -93,11 +112,17 @@ def _latest_script_failure_kind(*, episode_id: str, expected_run_token: str) -> 
 
 
 def _is_nonretryable_script_failure_kind(kind: str) -> bool:
+    """Return True when retrying script stage would not help."""
     normalized = str(kind or "").strip().lower()
     return normalized in {"source_too_short", "resume_blocked"}
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run script stage first, then hand off to audio stage.
+
+    Script generation can be retried in-process based on classified failure
+    kinds. Audio runs only after script stage succeeds.
+    """
     args = parse_args(argv)
     os.makedirs(args.outdir, exist_ok=True)
     audio_checkpoint_was_configured = "AUDIO_CHECKPOINT_DIR" in os.environ
@@ -119,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         script_force_unlock = bool(args.force_unlock)
         script_rc = 1
         for attempt in range(1, script_attempts + 1):
+            # Build child argv explicitly so retries can force resume semantics
+            # without mutating the original CLI.
             script_argv: list[str] = [
                 args.input_path,
                 script_path,
@@ -152,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
                 break
             if script_rc == 130:
                 return script_rc
+            # Retry only recoverable script failures. Non-recoverable failures
+            # should fail fast to avoid useless API usage.
             failure_kind = _latest_script_failure_kind(
                 episode_id=episode_id,
                 expected_run_token=run_token,
@@ -159,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
             if _is_nonretryable_script_failure_kind(failure_kind):
                 return script_rc
             if attempt < script_attempts:
+                # After the first failed attempt, retries always run in
+                # force-resume mode so work already produced can be reused.
                 script_resume = True
                 script_resume_force = True
                 script_force_unlock = True
@@ -192,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.force_clean:
             podcast_argv.append("--force-clean")
 
+        # Audio stage receives the same episode/run identifiers for strict
+        # manifest consistency and easier post-mortem correlation.
         return make_podcast.main(podcast_argv)
     finally:
         if not audio_checkpoint_was_configured:

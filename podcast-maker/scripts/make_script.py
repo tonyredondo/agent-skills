@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""CLI entrypoint for script generation and script-stage quality gates.
+
+This command is responsible for:
+- loading and validating source input,
+- running `ScriptGenerator` with checkpoint-aware retries,
+- enforcing or warning on script quality outcomes,
+- writing run summaries/manifests used by downstream audio stage.
+"""
+
 import argparse
 import dataclasses
 import json
@@ -21,6 +30,7 @@ from pipeline.errors import (
     ERROR_KIND_UNKNOWN,
     ScriptOperationError,
 )
+from pipeline.gate_action import default_script_gate_action, resolve_script_gate_action
 from pipeline.housekeeping import cleanup_dir, ensure_min_free_disk
 from pipeline.io_utils import read_text_file_with_fallback
 from pipeline.logging_utils import Logger
@@ -48,6 +58,7 @@ from pipeline.slo_gates import append_slo_event, evaluate_slo_windows
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for script generation."""
     parser = argparse.ArgumentParser(
         description="Generate podcast script JSON with chunking, checkpoints and resume."
     )
@@ -71,6 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with fallback on missing/invalid values."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -81,6 +93,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
+    """Read boolean env var using common truthy literals."""
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -88,6 +101,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _episode_id_arg(value: str) -> str:
+    """Validate `--episode-id` as a plain token (no path parts)."""
     name = str(value or "").strip()
     if not name:
         raise argparse.ArgumentTypeError("episode_id must not be empty")
@@ -97,13 +111,9 @@ def _episode_id_arg(value: str) -> str:
 
 
 def _default_script_gate_action(*, script_profile_name: str) -> str:
-    gate_profile = str(os.environ.get("SCRIPT_QUALITY_GATE_PROFILE", "") or "").strip().lower()
-    if gate_profile == "production_strict":
-        return "enforce"
-    profile = str(script_profile_name or "standard").strip().lower()
-    if profile in {"standard", "long"}:
-        return "enforce"
-    return "warn"
+    """Compatibility shim around centralized gate action defaults."""
+    # Backward-compatible alias kept for tests and external callers.
+    return default_script_gate_action(script_profile_name=script_profile_name)
 
 
 def _load_script_failure_signals(
@@ -113,6 +123,11 @@ def _load_script_failure_signals(
     expected_run_token: str | None = None,
     episode_id: str | None = None,
 ) -> dict[str, object]:
+    """Load structured failure hints from script run summary.
+
+    Signals are filtered by run token when available to avoid leaking data from
+    a previous execution of the same episode.
+    """
     run_episode_id = resolve_episode_id(output_path=output_path, override=episode_id)
     run_summary = os.path.join(checkpoint_dir, run_episode_id, "run_summary.json")
     if not os.path.exists(run_summary):
@@ -164,6 +179,7 @@ def _load_script_failure_signals(
 
 
 def _run_summary_has_current_token(path: str, *, expected_run_token: str) -> bool:
+    """Return True when run summary exists and belongs to this run token."""
     if not os.path.exists(path):
         return False
     try:
@@ -178,6 +194,7 @@ def _run_summary_has_current_token(path: str, *, expected_run_token: str) -> boo
 
 
 def _atomic_write_json(path: str, payload: dict[str, object]) -> None:
+    """Write JSON atomically to avoid partial files on interruption."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -195,6 +212,7 @@ def _sync_script_artifacts_after_repair(
     failure_kind: str | None,
     logger: Logger,
 ) -> None:
+    """Keep checkpoint and run summary aligned after quality-stage repairs."""
     now = int(time.time())
     repaired_wc = count_words_from_lines(repaired_lines) if repaired_lines is not None else None
     repaired_lc = len(repaired_lines) if repaired_lines is not None else None
@@ -245,6 +263,7 @@ def _sync_script_phase_metrics(
     phase_metrics: dict[str, float],
     logger: Logger,
 ) -> None:
+    """Patch phase timing metrics into existing run summary."""
     if not os.path.exists(run_summary_path):
         return
     try:
@@ -272,6 +291,7 @@ def _sync_script_summary_fields(
     updates: dict[str, object],
     logger: Logger,
 ) -> None:
+    """Apply partial field updates to run summary when it already exists."""
     if not os.path.exists(run_summary_path):
         return
     try:
@@ -286,6 +306,7 @@ def _sync_script_summary_fields(
 
 
 def _recoverable_script_failure_kinds() -> set[str]:
+    """Resolve failure kinds eligible for orchestrated script retries."""
     raw = str(
         os.environ.get(
             "SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS",
@@ -330,6 +351,7 @@ def _classify_retry_failure_kind(
     client: OpenAIClient | None,
     client_failure_deltas: dict[str, int] | None = None,
 ) -> str | None:
+    """Classify an exception into a retry policy failure kind."""
     if isinstance(exc, ScriptOperationError):
         exc_kind = str(exc.error_kind or "").strip().lower()
         if exc_kind:
@@ -385,6 +407,10 @@ def _run_generation_with_orchestrated_retry(
     backoff_seconds: float,
     retry_enabled: bool,
 ) -> tuple[object, list[dict[str, object]], int]:
+    """Execute script generation with bounded recoverable retries.
+
+    Returns `(result, retry_events, attempts_used)`.
+    """
     attempts = max(1, int(max_attempts))
     if not retry_enabled:
         attempts = 1
@@ -413,6 +439,8 @@ def _run_generation_with_orchestrated_retry(
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001
+            # Failure signals from checkpoint artifacts often carry richer
+            # classifier hints than the top-level exception message alone.
             signals = _load_script_failure_signals(
                 checkpoint_dir,
                 output_path,
@@ -439,6 +467,7 @@ def _run_generation_with_orchestrated_retry(
                 client=client,
                 client_failure_deltas=deltas,
             )
+            # Keep retries narrow: only known recoverable kinds are retried.
             should_retry = bool(
                 attempt < attempts
                 and failure_kind is not None
@@ -462,6 +491,8 @@ def _run_generation_with_orchestrated_retry(
                 failure_kind=failure_kind,
                 recoverable_kinds=sorted(recoverable_kinds),
             )
+            # Force checkpoint-aware resume flags so follow-up attempts reuse
+            # existing progress instead of recomputing completed chunks.
             use_resume = True
             use_resume_force = True
             if cancel_check and cancel_check():
@@ -472,6 +503,13 @@ def _run_generation_with_orchestrated_retry(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run script generation, quality validation/repair, and reporting.
+
+    The function keeps operational guarantees for maintainers:
+    - resilient retries for recoverable generation failures,
+    - deterministic + optional LLM quality checks before handoff,
+    - consistent summaries/manifests even when interrupted.
+    """
     args = parse_args(argv)
     started = time.time()
     run_token = str(getattr(args, "run_token", "") or "").strip() or uuid.uuid4().hex
@@ -546,6 +584,8 @@ def main(argv: list[str] | None = None) -> int:
     script_orchestrated_retry_events: list[dict[str, object]] = []
 
     if manifest_v2_enabled:
+        # Best-effort manifest bootstrap. Generation can still proceed even when
+        # manifest initialization fails; finalizer will attempt to reconcile.
         try:
             init_manifest(
                 checkpoint_dir=script_cfg.checkpoint_dir,
@@ -578,6 +618,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not source_text:
             raise RuntimeError("Input source unavailable")
+        # Pre-flight housekeeping protects disk usage and keeps checkpoint dirs
+        # bounded before new artifacts are produced.
         ensure_min_free_disk(".", reliability.min_free_disk_mb)
         report = cleanup_dir(
             base_dir=script_cfg.checkpoint_dir,
@@ -634,15 +676,16 @@ def main(argv: list[str] | None = None) -> int:
                 retry_enabled=script_orchestrated_retry_enabled,
             )
         )
-        script_gate_action = os.environ.get(
-            "SCRIPT_QUALITY_GATE_SCRIPT_ACTION",
-            _default_script_gate_action(script_profile_name=script_cfg.profile_name),
-        ).strip().lower()
-        if script_gate_action not in {"off", "warn", "enforce"}:
-            script_gate_action = _default_script_gate_action(script_profile_name=script_cfg.profile_name)
+        gate_cfg = ScriptQualityGateConfig.from_env(profile_name=script_cfg.profile_name)
+        script_gate_action = resolve_script_gate_action(
+            script_profile_name=script_cfg.profile_name,
+            fallback_action=gate_cfg.action,
+        )
         script_gate_action_effective = script_gate_action
         quality_gate_executed = script_gate_action in {"warn", "enforce"}
         if script_gate_action in {"warn", "enforce"}:
+            # Script-stage quality gate can hard-fail (`enforce`) or emit
+            # warnings (`warn`) while still allowing downstream audio.
             quality_stage_started = True
             quality_report_path = os.path.join(
                 script_cfg.checkpoint_dir,
@@ -662,7 +705,6 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 with open(result.output_path, "r", encoding="utf-8") as f:
                     generated_payload = json.load(f)
-                gate_cfg = ScriptQualityGateConfig.from_env(profile_name=script_cfg.profile_name)
                 gate_cfg = dataclasses.replace(gate_cfg, action=script_gate_action)
                 validated_payload = validate_script_payload(generated_payload)
                 hardened_lines = harden_script_structure(
@@ -726,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 quality_repair_started = time.time()
                 try:
+                    # Attempt deterministic and optional LLM-backed repair while
+                    # respecting cancellation and bounded repair deadlines.
                     repair_result = attempt_script_quality_repair(
                         validated_payload=validated_payload,
                         initial_report=quality_report_initial,
@@ -812,6 +856,8 @@ def main(argv: list[str] | None = None) -> int:
                 gate_enforce_failed = script_gate_action == "enforce" and not gate_passed
                 quality_stage_finished = True
                 if applied_repair:
+                    # Persist repaired script and synchronize checkpoint/summary
+                    # so resume keeps using the corrected content.
                     _atomic_write_json(result.output_path, {"lines": final_lines})
                     logger.info(
                         "script_quality_repair_applied",
@@ -861,6 +907,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if not gate_passed:
                     if script_gate_action == "enforce":
+                        # In enforce mode, quality rejection becomes a hard
+                        # operational failure for the script stage.
                         raise ScriptOperationError(
                             "Script quality gate rejected generated script",
                             error_kind=ERROR_KIND_SCRIPT_QUALITY,
@@ -897,6 +945,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.warn("script_interrupted", error=str(exc))
         status = "interrupted"
         exit_code = 130
+        # Signals persisted by lower layers preserve the most recent classified
+        # failure context even when interruption surfaces as a generic exception.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -921,6 +971,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("script_failed_operation", error=str(exc), error_kind=exc.error_kind)
         status = "failed"
         exit_code = 1
+        # Prefer checkpoint-stored failure kind when available because it can be
+        # more specific than the coarse operation-level exception taxonomy.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -946,6 +998,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("script_failed", error=str(exc))
         status = "failed"
         exit_code = 1
+        # Unknown failure path still pulls checkpoint signals so summaries remain
+        # usable by orchestration and triage tooling.
         signals = _load_script_failure_signals(
             script_cfg.checkpoint_dir,
             args.output_path,
@@ -970,6 +1024,8 @@ def main(argv: list[str] | None = None) -> int:
         elif isinstance(signal_retry_rate, (int, float)):
             retry_rate = round(float(signal_retry_rate), 4)
         if failure_kind is None:
+            # Last-resort taxonomy keeps dashboards and policy checks stable even
+            # when the exact new error class was not mapped yet.
             if stuck_abort:
                 failure_kind = ERROR_KIND_STUCK
             elif invalid_schema:
@@ -983,6 +1039,8 @@ def main(argv: list[str] | None = None) -> int:
             run_summary_path,
             expected_run_token=run_token,
         ):
+            # If generator did not write a current-token summary (for example
+            # early failure), synthesize a fallback summary for observability.
             fallback_summary: dict[str, object] = {
                 "component": "make_script",
                 "episode_id": episode_id,
@@ -1031,6 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(existing_summary, dict):
                         existing_token = str(existing_summary.get("run_token", "")).strip()
                         if not existing_token or existing_token == run_token:
+                            # Keep any extra fields written earlier in the run
+                            # while overriding core fields with current fallback values.
                             fallback_summary = {**existing_summary, **fallback_summary}
                 except Exception:
                     pass
@@ -1069,6 +1129,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             try:
                 stage_status = status
+                # Manifest expects terminal enum values for script stage.
+                # Defensive normalization avoids leaking unknown status strings.
                 if stage_status not in {"completed", "failed", "interrupted"}:
                     stage_status = "failed"
                 update_manifest(
@@ -1112,6 +1174,8 @@ def main(argv: list[str] | None = None) -> int:
                     path=manifest_path,
                 )
         try:
+            # SLO telemetry and window gates are intentionally best-effort: they
+            # should not hide the primary stage result when telemetry fails.
             cost_error_pct = 0.0
             retry_rate_value = float(retry_rate) if isinstance(retry_rate, (int, float)) else 0.0
             actual_cost_raw = os.environ.get("ACTUAL_COST_USD", "").strip()

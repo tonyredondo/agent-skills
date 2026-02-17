@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""SLO/KPI tracking and window-based rollback gate evaluation."""
+
 import json
 import math
 import os
@@ -11,6 +13,8 @@ from typing import Any, Dict, List
 
 @dataclass(frozen=True)
 class SLOTarget:
+    """Per-profile SLO objectives used by rolling window checks."""
+
     success_rate_min: float
     p95_runtime_max_seconds: float
     p95_resume_runtime_max_seconds: float
@@ -44,6 +48,7 @@ TECH_KPI_THRESHOLDS: Dict[str, float] = {
 
 
 def _default_history_path() -> str:
+    """Resolve JSONL history path used for SLO telemetry events."""
     return os.environ.get("SLO_HISTORY_PATH", "./.podcast_slo_history.jsonl")
 
 
@@ -62,6 +67,7 @@ def append_slo_event(
     cost_estimation_error_pct: float | None = None,
     history_path: str | None = None,
 ) -> None:
+    """Append one normalized SLO event to history JSONL file."""
     path = history_path or _default_history_path()
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     event = {
@@ -87,6 +93,7 @@ def append_slo_event(
 
 
 def _load_events(path: str) -> List[Dict[str, Any]]:
+    """Load SLO history JSONL into dict events."""
     if not os.path.exists(path):
         return []
     out: List[Dict[str, Any]] = []
@@ -105,6 +112,7 @@ def _load_events(path: str) -> List[Dict[str, Any]]:
 
 
 def _p95(values: List[float]) -> float:
+    """Compute empirical P95 from numeric sample list."""
     if not values:
         return math.inf
     data = sorted(values)
@@ -114,6 +122,7 @@ def _p95(values: List[float]) -> float:
 
 
 def _p90(values: List[float]) -> float:
+    """Compute empirical P90 from numeric sample list."""
     if not values:
         return math.inf
     data = sorted(values)
@@ -130,6 +139,7 @@ def evaluate_slo_windows(
     window_size: int = 20,
     required_failed_windows: int = 2,
 ) -> Dict[str, Any]:
+    """Evaluate rolling SLO windows and decide rollback signal."""
     path = history_path or _default_history_path()
     events = [
         e
@@ -168,6 +178,7 @@ def evaluate_slo_windows(
     failed_windows = 0
     window_reports = []
     for w in windows:
+        # Compute reliability and technical KPIs per window.
         completed = [e for e in w if str(e.get("status")) == "completed"]
         success_rate = len(completed) / float(len(w))
         p95_runtime = _p95([float(e.get("elapsed_seconds", 0.0)) for e in completed]) if completed else math.inf

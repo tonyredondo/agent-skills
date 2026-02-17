@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Script quality evaluation and repair utilities.
+
+The gate combines deterministic structural checks with optional LLM scoring and
+supports auto-repair flows used by script and pre-audio stages.
+"""
+
 import json
 import math
 import os
@@ -8,13 +14,18 @@ import re
 import textwrap
 import time
 import unicodedata
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
 
 from .config import ScriptConfig
 from .errors import ERROR_KIND_SCRIPT_QUALITY
 from .logging_utils import Logger
 from .openai_client import OpenAIClient
+from .script_quality_gate_config import (
+    ScriptQualityGateConfig,
+    critical_score_threshold as _critical_score_threshold,
+    hard_fail_structural_only_enabled as _hard_fail_structural_only_enabled,
+    strict_score_blocking_enabled as _strict_score_blocking_enabled,
+)
 from .schema import (
     SCRIPT_JSON_SCHEMA,
     canonical_json,
@@ -28,11 +39,6 @@ from .script_postprocess import (
     ensure_farewell_last,
     harden_script_structure,
 )
-
-
-SUPPORTED_ACTIONS = {"off", "warn", "enforce"}
-SUPPORTED_EVALUATORS = {"rules", "llm", "hybrid"}
-SUPPORTED_GATE_PROFILES = {"default", "production_strict"}
 
 SUMMARY_TOKENS = (
     "en resumen",
@@ -111,19 +117,13 @@ INTERNAL_WORKFLOW_HINT_RE = re.compile(
 QUESTION_PUNCT_RE = re.compile(r"[¿?]")
 
 
-def _env_str(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    return default if raw is None else str(raw).strip()
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+def _clamp(value: float, low: float, high: float) -> float:
+    """Clamp a float to inclusive range."""
+    return max(low, min(high, value))
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -133,163 +133,9 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = float(str(raw).strip())
-        if not math.isfinite(value):
-            return default
-        return value
-    except (TypeError, ValueError):
-        return default
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def _profile_default_sample_rate(profile_name: str) -> float:
-    normalized = str(profile_name or "standard").strip().lower()
-    if normalized == "short":
-        return 0.5
-    return 1.0
-
-
-def _hard_fail_structural_only_enabled() -> bool:
-    return _env_bool("SCRIPT_QUALITY_GATE_HARD_FAIL_STRUCTURAL_ONLY", True)
-
-
-def _strict_score_blocking_enabled() -> bool:
-    return _env_bool("SCRIPT_QUALITY_GATE_STRICT_SCORE_BLOCKING", False)
-
-
-def _critical_score_threshold() -> float:
-    return _clamp(_env_float("SCRIPT_QUALITY_GATE_CRITICAL_SCORE_THRESHOLD", 2.5), 0.0, 5.0)
-
-
-@dataclass(frozen=True)
-class ScriptQualityGateConfig:
-    action: str
-    evaluator: str
-    llm_sample_rate: float
-    min_words_ratio: float
-    max_words_ratio: float
-    max_consecutive_same_speaker: int
-    max_repeat_line_ratio: float
-    require_summary: bool
-    require_closing: bool
-    min_overall_score: float
-    min_cadence_score: float
-    min_logic_score: float
-    min_clarity_score: float
-    llm_max_output_tokens: int
-    llm_max_prompt_chars: int
-    auto_repair: bool
-    repair_attempts: int
-    repair_max_output_tokens: int
-    repair_max_input_chars: int
-    semantic_rule_fallback: bool = True
-    semantic_min_confidence: float = 0.55
-    semantic_tail_lines: int = 10
-    semantic_max_output_tokens: int = 220
-    repair_revert_on_fail: bool = True
-    repair_min_word_ratio: float = 0.85
-
-    @staticmethod
-    def from_env(*, profile_name: str) -> "ScriptQualityGateConfig":
-        gate_profile = _env_str("SCRIPT_QUALITY_GATE_PROFILE", "default").lower()
-        if gate_profile not in SUPPORTED_GATE_PROFILES:
-            gate_profile = "default"
-        is_production_strict = gate_profile == "production_strict"
-        strict_alternation = _env_bool("SCRIPT_STRICT_HOST_ALTERNATION", True)
-
-        action = _env_str("SCRIPT_QUALITY_GATE_ACTION", "enforce").lower()
-        if action not in SUPPORTED_ACTIONS:
-            action = "enforce"
-
-        evaluator = _env_str("SCRIPT_QUALITY_GATE_EVALUATOR", "hybrid").lower()
-        if evaluator not in SUPPORTED_EVALUATORS:
-            evaluator = "hybrid"
-
-        sample_default = 1.0 if is_production_strict else _profile_default_sample_rate(profile_name)
-        sample_rate = _clamp(_env_float("SCRIPT_QUALITY_GATE_LLM_SAMPLE", sample_default), 0.0, 1.0)
-        min_words_ratio = _clamp(_env_float("SCRIPT_QUALITY_MIN_WORDS_RATIO", 0.7), 0.0, 2.0)
-        max_words_ratio = _clamp(_env_float("SCRIPT_QUALITY_MAX_WORDS_RATIO", 1.6), 0.1, 3.0)
-        if max_words_ratio < min_words_ratio:
-            max_words_ratio = min_words_ratio
-        default_max_consecutive_same_speaker = 1 if strict_alternation else (2 if is_production_strict else 3)
-        default_max_repeat_line_ratio = 0.12 if is_production_strict else 0.18
-        default_min_overall = 4.0 if is_production_strict else 3.8
-        default_min_cadence = 3.9 if is_production_strict else 3.7
-        default_min_logic = 4.0 if is_production_strict else 3.8
-        default_min_clarity = 4.0 if is_production_strict else 3.8
-        default_repair_attempts = 2 if is_production_strict else 2
-        return ScriptQualityGateConfig(
-            action=action,
-            evaluator=evaluator,
-            llm_sample_rate=sample_rate,
-            min_words_ratio=min_words_ratio,
-            max_words_ratio=max_words_ratio,
-            max_consecutive_same_speaker=max(
-                1,
-                _env_int(
-                    "SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER",
-                    default_max_consecutive_same_speaker,
-                ),
-            ),
-            max_repeat_line_ratio=_clamp(
-                _env_float("SCRIPT_QUALITY_MAX_REPEAT_LINE_RATIO", default_max_repeat_line_ratio),
-                0.0,
-                1.0,
-            ),
-            require_summary=_env_bool("SCRIPT_QUALITY_REQUIRE_SUMMARY", True),
-            require_closing=_env_bool("SCRIPT_QUALITY_REQUIRE_CLOSING", True),
-            min_overall_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_OVERALL_SCORE", default_min_overall), 0.0, 5.0),
-            min_cadence_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_CADENCE_SCORE", default_min_cadence), 0.0, 5.0),
-            min_logic_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_LOGIC_SCORE", default_min_logic), 0.0, 5.0),
-            min_clarity_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_CLARITY_SCORE", default_min_clarity), 0.0, 5.0),
-            llm_max_output_tokens=max(128, _env_int("SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS", 1400)),
-            llm_max_prompt_chars=max(2000, _env_int("SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS", 12000)),
-            auto_repair=_env_bool("SCRIPT_QUALITY_GATE_AUTO_REPAIR", True),
-            repair_attempts=max(0, _env_int("SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS", default_repair_attempts)),
-            repair_max_output_tokens=max(
-                256,
-                _env_int("SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS", 5200),
-            ),
-            repair_max_input_chars=max(
-                4000,
-                _env_int("SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS", 30000),
-            ),
-            semantic_rule_fallback=_env_bool("SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK", True),
-            semantic_min_confidence=_clamp(
-                _env_float("SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE", 0.55),
-                0.0,
-                1.0,
-            ),
-            semantic_tail_lines=max(
-                3,
-                min(24, _env_int("SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES", 10)),
-            ),
-            semantic_max_output_tokens=max(
-                96,
-                _env_int("SCRIPT_QUALITY_GATE_SEMANTIC_MAX_OUTPUT_TOKENS", 440),
-            ),
-            repair_revert_on_fail=_env_bool("SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL", True),
-            repair_min_word_ratio=_clamp(
-                _env_float("SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO", 0.85),
-                0.0,
-                2.0,
-            ),
-        )
-
-    @property
-    def enabled(self) -> bool:
-        return self.action in {"warn", "enforce"}
-
-
 class ScriptQualityGateError(RuntimeError):
+    """Raised when quality gate runs in enforce mode and rejects script."""
+
     def __init__(self, message: str, *, report: Dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.failure_kind = ERROR_KIND_SCRIPT_QUALITY
@@ -603,6 +449,7 @@ def evaluate_script_quality(
     client: OpenAIClient | None = None,
     logger: Logger | None = None,
 ) -> Dict[str, Any]:
+    """Evaluate script quality and return normalized decision report."""
     started = time.time()
     raw_lines = list(validated_payload.get("lines", []))
     lines = harden_script_structure(
@@ -646,6 +493,8 @@ def evaluate_script_quality(
         need_summary = bool(quality_cfg.require_summary and not rules.get("summary_ok", True))
         need_closing = bool(quality_cfg.require_closing and not rules.get("closing_ok", True))
         if need_summary or need_closing:
+            # Semantic fallback lets the evaluator confirm intent (summary/closing)
+            # when lexical token checks are too strict.
             semantic_info["called"] = True
             if client is None or not hasattr(client, "generate_freeform_text"):
                 semantic_info["skipped_reason"] = "semantic_client_unavailable"
@@ -680,6 +529,8 @@ def evaluate_script_quality(
                     semantic_info["confidence_gate_passed"] = confidence_gate_passed
                     semantic_info["evidence"] = evidence
                     if confidence_gate_passed:
+                        # Promote semantic signals into deterministic rules only
+                        # when confidence threshold is satisfied.
                         used = False
                         if need_summary and summary_semantic:
                             rules["summary_ok"] = True
@@ -716,6 +567,8 @@ def evaluate_script_quality(
     if quality_cfg.evaluator in {"llm", "hybrid"}:
         llm_sampled = quality_cfg.evaluator == "llm" or (rules_pass and _should_sample_llm(lines, quality_cfg.llm_sample_rate))
         if llm_sampled:
+            # LLM evaluator contributes editorial quality signals that
+            # complement deterministic structural checks.
             llm_called = True
             if client is None:
                 reasons_llm.append("llm_client_unavailable")
@@ -792,6 +645,7 @@ def evaluate_script_quality(
         and critical_score_failed
     )
     hard_fail_eligible = bool(structural_fail or score_hard_fail_eligible)
+    # Rollout switch: in full mode, LLM editorial failures can hard-fail too.
     if not structural_only_rollout and llm_editorial_fail and not llm_error:
         hard_fail_eligible = True
     final_pass = not hard_fail_eligible
@@ -889,6 +743,7 @@ def evaluate_script_quality(
 
 
 def write_quality_report(path: str, report: Dict[str, Any]) -> None:
+    """Persist quality report atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -907,6 +762,7 @@ def _with_repair_metadata(
     attempts_used: int,
     history: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """Attach repair attempt metadata to a quality report payload."""
     out = dict(report)
     out["initial_pass"] = bool(initial_pass)
     out["repair_attempted"] = bool(attempted)
@@ -924,6 +780,7 @@ def _build_repair_prompt(
     script_cfg: ScriptConfig,
     quality_cfg: ScriptQualityGateConfig,
 ) -> str:
+    """Build repair prompt from report reasons + bounded payload snapshot."""
     reasons = report.get("reasons", [])
     reason_lines: List[str] = []
     if isinstance(reasons, list):
@@ -983,6 +840,7 @@ def _deterministic_repair_payload(
     *,
     quality_cfg: ScriptQualityGateConfig,
 ) -> Dict[str, List[Dict[str, str]]]:
+    """Apply deterministic structure fixes before any LLM repair."""
     base_lines = list(payload.get("lines", []))
     lines = ensure_en_resumen(base_lines)
     lines = ensure_farewell_last(lines)
@@ -998,6 +856,7 @@ def _repair_output_token_budget(
     payload: Dict[str, List[Dict[str, str]]],
     quality_cfg: ScriptQualityGateConfig,
 ) -> int:
+    """Estimate repair token budget from JSON payload size."""
     compact = canonical_json(payload)
     # Heuristic: JSON-heavy payloads need higher output budget than plain word count.
     approx_needed = int(math.ceil(float(len(compact)) / 3.5)) + 160
@@ -1025,6 +884,7 @@ def attempt_script_quality_repair(
     total_timeout_seconds: float | None = None,
     attempt_timeout_seconds: int | None = None,
 ) -> Dict[str, Any]:
+    """Attempt deterministic and LLM-based repair for failed gate reports."""
     initial_pass = bool(initial_report.get("pass", False))
     history: List[Dict[str, Any]] = []
     validated_input_payload = validate_script_payload(validated_payload)
@@ -1073,6 +933,7 @@ def attempt_script_quality_repair(
         }
 
     if not hard_fail_eligible:
+        # Skip repair when policy classifies the failure as warn-only.
         history.append({"attempt": 0, "status": "skipped", "reason": "hard_fail_not_eligible"})
         return {
             "payload": current_payload,
@@ -1110,6 +971,7 @@ def attempt_script_quality_repair(
     )
     deterministic_hash = content_hash(canonical_json(deterministic_payload))
     if deterministic_hash != initial_hash:
+        # First, try deterministic repair to avoid unnecessary LLM calls.
         if _stage_timed_out():
             history.append({"attempt": 0, "status": "timeout", "reason": "quality_repair_timeout"})
             current_report = dict(current_report)
@@ -1169,6 +1031,8 @@ def attempt_script_quality_repair(
                 "repaired": changed,
             }
         if not quality_cfg.repair_revert_on_fail:
+            # Optional mode keeps best-effort deterministic edits even when
+            # they still do not pass the gate.
             current_payload = deterministic_payload
             current_report = deterministic_report
 
@@ -1224,6 +1088,8 @@ def attempt_script_quality_repair(
             quality_cfg=quality_cfg,
         )
         try:
+            # LLM repair attempt: strict schema response plus optional timeout
+            # override for bounded stage latency.
             call_kwargs: Dict[str, Any] = {
                 "prompt": prompt,
                 "schema": SCRIPT_JSON_SCHEMA,
@@ -1265,6 +1131,7 @@ def attempt_script_quality_repair(
                 int(round(float(initial_word_count) * float(quality_cfg.repair_min_word_ratio))),
             )
             if candidate_word_count < min_allowed_after_repair:
+                # Guardrail prevents repairs that "pass" by collapsing content.
                 history.append(
                     {
                         "attempt": attempt,
@@ -1291,6 +1158,7 @@ def attempt_script_quality_repair(
                 }
             )
             if bool(candidate_report.get("pass", False)):
+                # Stop at first candidate that passes the gate.
                 final_hash = content_hash(canonical_json(candidate_payload))
                 changed = final_hash != initial_hash
                 return {
@@ -1307,6 +1175,7 @@ def attempt_script_quality_repair(
                     "repaired": changed,
                 }
             if not quality_cfg.repair_revert_on_fail:
+                # In non-revert mode, continue iterations from latest candidate.
                 current_payload = candidate_payload
                 current_report = candidate_report
         except Exception as exc:  # noqa: BLE001

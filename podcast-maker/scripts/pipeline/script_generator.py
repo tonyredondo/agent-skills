@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Script generation engine for the podcast pipeline.
+
+The generator converts source text into structured Host1/Host2 dialogue using
+chunked prompting, schema-aware recovery, checkpoint resume, and deterministic
+post-processing safeguards.
+"""
+
 import json
 import math
 import os
@@ -34,7 +41,7 @@ from .schema import (
     validate_script_payload,
 )
 from .script_checkpoint import ScriptCheckpointStore
-from .script_chunker import context_tail, split_source_chunks, target_chunk_count
+from .script_chunker import split_source_chunks, target_chunk_count
 from .script_postprocess import (
     dedupe_append,
     evaluate_script_completeness,
@@ -44,126 +51,18 @@ from .script_postprocess import (
     harden_script_structure,
     repair_script_completeness,
 )
+from .script_generator_helpers import (
+    atomic_write_text as _atomic_write_text,
+    default_completeness_report as _default_completeness_report,
+    env_bool as _env_bool,
+    env_float as _env_float,
+    env_int as _env_int,
+    migrate_checkpoint_lines as _migrate_checkpoint_lines,
+    phase_seconds_with_generation as _phase_seconds_with_generation,
+    recent_dialogue as _recent_dialogue,
+    sum_int_maps as _sum_int_maps,
+)
 from .run_manifest import pipeline_summary_path, resolve_episode_id, run_manifest_path
-
-
-def _atomic_write_text(path: str, value: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(value)
-        if not value.endswith("\n"):
-            f.write("\n")
-    os.replace(tmp, path)
-
-
-def _phase_seconds_with_generation(phase_seconds: Dict[str, float]) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    for key, value in phase_seconds.items():
-        try:
-            out[str(key)] = round(float(value), 3)
-        except (TypeError, ValueError):
-            out[str(key)] = 0.0
-    generation_components = (
-        out.get("pre_summary", 0.0),
-        out.get("chunk_generation", 0.0),
-        out.get("continuations", 0.0),
-        out.get("truncation_recovery", 0.0),
-        out.get("postprocess", 0.0),
-    )
-    out["generation"] = round(sum(generation_components), 3)
-    return out
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(value):
-        return default
-    return value
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def _sum_int_maps(*maps: Dict[str, int]) -> Dict[str, int]:
-    out: Dict[str, int] = {}
-    for payload in maps:
-        for key, value in dict(payload or {}).items():
-            try:
-                out[str(key)] = int(out.get(str(key), 0)) + int(value)
-            except (TypeError, ValueError):
-                continue
-    return out
-
-
-def _default_completeness_report(*, reason: str = "") -> Dict[str, object]:
-    reasons: List[str] = []
-    if reason:
-        reasons.append(str(reason))
-    return {
-        "pass": True,
-        "reasons": reasons,
-        "truncation_indices": [],
-        "block_sequence": [],
-    }
-
-
-def _recent_dialogue(lines: List[Dict[str, str]], max_lines: int) -> str:
-    tail = context_tail(lines, max_lines)
-    rows: List[str] = []
-    for line in tail:
-        rows.append(f"{line['speaker']} ({line['role']}): {line['text']}")
-    return "\n".join(rows).strip()
-
-
-def _migrate_checkpoint_lines(raw_lines: Any) -> List[Dict[str, str]]:
-    if not isinstance(raw_lines, list):
-        return []
-    migrated: List[Dict[str, str]] = []
-    for idx, item in enumerate(raw_lines):
-        if not isinstance(item, dict):
-            continue
-        speaker = str(item.get("speaker") or item.get("name") or "").strip()
-        text = str(
-            item.get("text")
-            or item.get("line")
-            or item.get("content")
-            or item.get("dialogue")
-            or ""
-        ).strip()
-        if not speaker or not text:
-            continue
-        role = str(item.get("role") or "").strip() or ("Host1" if idx % 2 == 0 else "Host2")
-        instructions = str(item.get("instructions") or "").strip()
-        migrated.append(
-            {
-                "speaker": speaker,
-                "role": role,
-                "instructions": instructions,
-                "text": text,
-            }
-        )
-    return migrated
 
 
 SOURCE_AUTHOR_LINE_RE = re.compile(
@@ -191,6 +90,8 @@ SOURCE_INDEX_ITEM_RE = re.compile(
 
 @dataclass
 class ScriptGenerationResult:
+    """Final artifact pointers and key script-stage metrics."""
+
     episode_id: str
     output_path: str
     line_count: int
@@ -204,6 +105,8 @@ class ScriptGenerationResult:
 
 @dataclass
 class ScriptGenerator:
+    """Stateful script generation coordinator with recovery ladders."""
+
     config: ScriptConfig
     reliability: ReliabilityConfig
     logger: Logger
@@ -248,6 +151,7 @@ class ScriptGenerator:
         return float(truncation_failures) / float(script_requests)
 
     def _adaptive_token_budget(self, *, base_tokens: int, stage: str) -> int:
+        """Scale token budgets up/down when truncation pressure increases."""
         budget = max(128, int(base_tokens))
         if not _env_bool("SCRIPT_TRUNCATION_PRESSURE_ADAPTIVE", True):
             return budget
@@ -484,6 +388,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> str:
+        """Build a chunk prompt with continuity and target-size guidance."""
         recent = _recent_dialogue(lines_so_far, self.config.max_context_lines)
         current_words = count_words_from_lines(lines_so_far)
         remaining_to_min = max(0, min_words - current_words)
@@ -867,6 +772,7 @@ class ScriptGenerator:
         max_words: int,
         max_output_tokens: int,
     ) -> List[Dict[str, str]]:
+        """Generate one chunk, falling back to adaptive split recovery when needed."""
         stage = f"chunk_{chunk_idx}"
         adaptive_tokens = self._adaptive_token_budget(base_tokens=max_output_tokens, stage=stage)
         if _env_bool("SCRIPT_TRUNCATION_PRESSURE_ADAPTIVE", True):
@@ -874,6 +780,8 @@ class ScriptGenerator:
             presplit_threshold = max(0.0, _env_float("SCRIPT_TRUNCATION_PRESSURE_PRESPLIT_THRESHOLD", 0.28))
             parts = self._split_chunk_for_recovery(source_chunk)
             if pressure >= presplit_threshold and len(parts) >= 2:
+                # When truncation pressure is high, pre-splitting reduces parse
+                # risk before we even spend a full-chunk request.
                 self._truncation_pressure_presplit_events = int(
                     getattr(self, "_truncation_pressure_presplit_events", 0)
                 ) + 1
@@ -934,6 +842,8 @@ class ScriptGenerator:
                 raise
             parts = self._split_chunk_for_recovery(source_chunk)
             if len(parts) < 2:
+                # Unsplittable chunk falls back to a cheaper whole-chunk retry
+                # before escalating to a hard failure.
                 self._mark_fallback_mode(stage=stage, mode="whole_chunk_retry")
                 self.logger.warn(
                     "chunk_recovery_whole_retry_start",
@@ -1198,6 +1108,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> List[Dict[str, str]]:
+        """Generate continuation lines with targeted recovery on parse failures."""
         continuation_stage = f"continuation_{continuation_round}"
         continuation_tokens = self._adaptive_token_budget(
             base_tokens=self.config.max_output_tokens_continuation,
@@ -1267,6 +1178,8 @@ class ScriptGenerator:
             primary_threshold = int(round(float(min_words) * fallback_min_ratio))
             secondary_threshold = int(round(float(min_words) * fallback_secondary_ratio))
             if current_words >= primary_threshold:
+                # Near-target path prioritizes deterministic closure and minimal
+                # additive lines over more model calls.
                 fallback_lines = self._deterministic_continuation_fallback_lines(lines_so_far=lines_so_far)
                 if fallback_lines:
                     self._continuation_fallback_closures = int(
@@ -1298,6 +1211,8 @@ class ScriptGenerator:
                     )
                     return extension_lines
             elif current_words >= secondary_threshold:
+                # Mid-tier threshold allows deterministic extension only, keeping
+                # quality while avoiding another fragile continuation request.
                 extension_lines = self._deterministic_continuation_extension_lines(
                     lines_so_far=lines_so_far,
                     min_words=min_words,
@@ -1485,6 +1400,7 @@ class ScriptGenerator:
         min_words: int,
         max_words: int,
     ) -> Dict[str, Any]:
+        """Evaluate source sufficiency for requested target duration."""
         target_word_count = max(min_words, int((min_words + max_words) / 2))
         source_to_target_ratio = float(source_word_count) / float(max(1, target_word_count))
         recommended_min_words = max(
@@ -1559,6 +1475,7 @@ class ScriptGenerator:
         resume_force: bool,
         cancel_check: Optional[Callable[[], bool]],
     ) -> str:
+        """Resolve source text used for generation, including pre-summary cache."""
         cached = str(state.get("generation_source", "")).strip()
         if cached:
             return cached
@@ -1587,6 +1504,7 @@ class ScriptGenerator:
         resume: bool,
         resume_force: bool,
     ) -> Dict[str, Any]:
+        """Load resume state or initialize a fresh checkpoint state."""
         existing = store.load()
         if resume:
             if existing is None:
@@ -1660,6 +1578,7 @@ class ScriptGenerator:
         cancel_check: Optional[Callable[[], bool]] = None,
         run_token: Optional[str] = None,
     ) -> ScriptGenerationResult:
+        """Generate final script JSON with checkpointing and resilience controls."""
         source = source_text.strip()
         if not source:
             raise RuntimeError("Input source is empty. Provide enough content to build a podcast.")
@@ -1711,6 +1630,7 @@ class ScriptGenerator:
         completeness_after_repair: Dict[str, object] = _default_completeness_report()
 
         try:
+            # Reset per-run counters so resumes/retries report clean deltas.
             self._schema_validation_failures = 0
             self._schema_repair_successes = 0
             self._schema_repair_failures = 0
@@ -1754,6 +1674,7 @@ class ScriptGenerator:
                 resume=resume,
                 resume_force=resume_force,
             )
+            # Validate source suitability before spending API budget.
             source_validation = self._validate_source_length(
                 source_word_count=source_word_count,
                 min_words=min_words,
@@ -1788,6 +1709,7 @@ class ScriptGenerator:
             pre_summary_started = time.time()
             self._last_stage = "pre_summary"
             try:
+                # Source may be pre-summarized/cached to stabilize long inputs.
                 source_for_generation = self._resolve_generation_source(
                     source=source,
                     state=state,
@@ -1882,6 +1804,8 @@ class ScriptGenerator:
                         )
                         store.save(state)
                         if wc >= max_words and chunk_idx < (total_chunks - 1):
+                            # Hard stop when upper bound is already reached; avoid
+                            # over-generation that would later be trimmed/repaired.
                             self.logger.warn(
                                 "chunk_generation_early_stop_max_words",
                                 chunk=chunk_idx + 1,
@@ -1929,6 +1853,7 @@ class ScriptGenerator:
                         else:
                             no_progress_rounds = 0
                         if no_progress_rounds >= self.config.no_progress_rounds:
+                            # Safety brake for "alive but not progressing" loops.
                             self._no_progress_abort = True
                             raise RuntimeError(
                                 "No progress while expanding script. Aborting to avoid long hang."
@@ -1951,6 +1876,8 @@ class ScriptGenerator:
                 self._last_stage = "truncation_recovery"
                 try:
                     if self._looks_truncated(lines):
+                        # Final-tail recovery runs once after chunking/continuations
+                        # if deterministic heuristics still detect truncation.
                         prev_wc = count_words_from_lines(lines)
                         self.logger.warn(
                             "script_truncation_detected",
@@ -1979,6 +1906,8 @@ class ScriptGenerator:
                             invalid_schema_error = self._is_invalid_schema_error(exc)
                             if not empty_output_error and not invalid_schema_error:
                                 raise
+                            # Preserve partial output with deterministic closure when
+                            # recovery call fails due to empty/schema issues.
                             self._truncation_recovery_fallback_used = True
                             fallback_mode = (
                                 "empty_output_preserve_partial"
@@ -2028,6 +1957,7 @@ class ScriptGenerator:
             postprocess_started = time.time()
             self._last_stage = "postprocess"
             try:
+                # Final deterministic hardening pass before writing output.
                 lines = harden_script_structure(
                     lines,
                     max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
@@ -2231,6 +2161,7 @@ class ScriptGenerator:
                 ),
             }
             run_summary.update(source_validation)
+            # Persist rich telemetry for debugging and orchestrated retries.
             _atomic_write_text(run_summary_path, json.dumps(run_summary, indent=2, ensure_ascii=False))
             self.logger.info("script_generation_done", output_path=output_path, word_count=final_wc)
             return ScriptGenerationResult(
@@ -2247,6 +2178,8 @@ class ScriptGenerator:
         except InterruptedError:
             if state:
                 try:
+                    # Persist interruption metadata before bubbling up so
+                    # orchestrators can resume without ambiguity.
                     state["status"] = "interrupted"
                     state["failure_kind"] = ERROR_KIND_INTERRUPTED
                     state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
@@ -2407,6 +2340,8 @@ class ScriptGenerator:
             elif empty_output_failures > 0:
                 failure_kind = ERROR_KIND_OPENAI_EMPTY_OUTPUT
             elif (schema_validation_failures + script_json_parse_failures) > 0:
+                # Group parse/schema drift under a stable invalid-schema bucket
+                # for retry policy and incident trend analysis.
                 failure_kind = ERROR_KIND_INVALID_SCHEMA
             if state:
                 try:

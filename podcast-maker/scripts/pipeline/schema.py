@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Schema normalization and salvage utilities for script payloads."""
+
 import hashlib
 import json
 import re
@@ -36,6 +38,7 @@ SCRIPT_JSON_SCHEMA: Dict[str, Any] = {
 
 
 def load_json_text(text: str) -> Dict[str, Any]:
+    """Parse JSON text and require object root."""
     value = json.loads(text)
     if not isinstance(value, dict):
         raise ValueError("JSON root must be an object")
@@ -43,6 +46,7 @@ def load_json_text(text: str) -> Dict[str, Any]:
 
 
 def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
+    """Normalize one dialogue line into canonical schema fields."""
     speaker = str(raw.get("speaker", "")).strip()
     role = str(raw.get("role", "")).strip()
     instructions = str(raw.get("instructions", "")).strip()
@@ -68,6 +72,7 @@ def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
 
 
 def validate_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+    """Validate/normalize payload and ensure non-empty `lines` list."""
     lines = payload.get("lines", [])
     if not isinstance(lines, list):
         raise ValueError("'lines' must be a list")
@@ -82,6 +87,7 @@ def validate_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str,
 
 
 def _coerce_text_value(value: Any) -> str:
+    """Coerce heterogeneous value types into cleaned text."""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -97,6 +103,7 @@ def _coerce_text_value(value: Any) -> str:
 
 
 def _extract_candidate_lines(payload: Dict[str, Any]) -> List[Any]:
+    """Extract possible line arrays from common nested payload shapes."""
     candidates: List[Any] = []
 
     def _add_lines(value: Any) -> None:
@@ -143,6 +150,7 @@ def _extract_candidate_lines(payload: Dict[str, Any]) -> List[Any]:
 
 
 def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+    """Best-effort salvage of malformed payload into canonical `lines`."""
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
     raw_lines = _extract_candidate_lines(payload)
@@ -213,6 +221,7 @@ def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, 
 
 
 def count_words_from_lines(lines: List[Dict[str, str]]) -> int:
+    """Count total words across normalized line texts."""
     total = 0
     for line in lines:
         total += len(line.get("text", "").split())
@@ -220,19 +229,23 @@ def count_words_from_lines(lines: List[Dict[str, str]]) -> int:
 
 
 def count_words_from_payload(payload: Dict[str, Any]) -> int:
+    """Validate payload then count words from normalized lines."""
     validated = validate_script_payload(payload)
     return count_words_from_lines(validated["lines"])
 
 
 def canonical_json(payload: Dict[str, Any]) -> str:
+    """Serialize payload to stable compact JSON representation."""
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def content_hash(text: str) -> str:
+    """Compute SHA-256 hash for text input."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def dedupe_key(line: Dict[str, str]) -> str:
+    """Compute content-based dedupe key for one line."""
     normalized = (
         f"{line.get('speaker','')}|"
         f"{line.get('role','')}|"

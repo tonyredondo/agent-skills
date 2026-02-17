@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Golden-suite gate evaluation over candidate script artifacts."""
+
 import json
 import os
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ from .golden_metrics import ScriptMetrics, compare_against_baseline, compute_scr
 
 @dataclass(frozen=True)
 class GoldenCaseResult:
+    """Result payload for one golden case comparison."""
+
     name: str
     pass_case: bool
     current: Dict[str, Any]
@@ -19,6 +23,7 @@ class GoldenCaseResult:
 
 
 def _load_json(path: str) -> Dict[str, Any]:
+    """Load JSON object payload from disk."""
     with open(path, "r", encoding="utf-8") as f:
         value = json.load(f)
     if not isinstance(value, dict):
@@ -27,6 +32,7 @@ def _load_json(path: str) -> Dict[str, Any]:
 
 
 def load_baseline_metrics(path: str) -> Dict[str, Dict[str, Any]]:
+    """Load baseline metrics map keyed by case name."""
     payload = _load_json(path)
     out: Dict[str, Dict[str, Any]] = {}
     for key, value in payload.items():
@@ -45,6 +51,7 @@ def evaluate_golden_suite(
     min_line_ratio: float = 0.6,
     max_line_ratio: float = 1.7,
 ) -> Dict[str, Any]:
+    """Evaluate all baseline cases against candidate scripts."""
     baseline = load_baseline_metrics(baseline_path)
     case_results: List[GoldenCaseResult] = []
     candidate_dir_abs = os.path.abspath(candidate_dir)

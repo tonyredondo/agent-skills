@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Text-to-speech synthesis orchestration with checkpoint resume support.
+
+This module turns validated script lines into segment MP3 files, tracks
+manifest state for resumability, and exports structured summaries for the
+audio stage.
+"""
+
 import json
 import os
 import re
@@ -78,6 +85,7 @@ PHASE_STYLE_OVERRIDES: Dict[str, Dict[str, str]] = {
 
 
 def _clamp_tts_speed(value: Any, *, fallback: float = 1.0) -> float:
+    """Clamp speed values to API-safe range."""
     try:
         parsed = float(value)
         if not math.isfinite(parsed):
@@ -90,6 +98,7 @@ def _clamp_tts_speed(value: Any, *, fallback: float = 1.0) -> float:
 
 
 def _normalize_phase(value: str) -> str:
+    """Normalize speech phase labels to known values."""
     phase = str(value or "").strip().lower()
     if phase in VALID_SPEECH_PHASES:
         return phase
@@ -97,11 +106,13 @@ def _normalize_phase(value: str) -> str:
 
 
 def _normalize_instruction_key(value: str) -> str:
+    """Normalize instruction keys to canonical field names."""
     token = re.sub(r"[^a-z]", "", str(value or "").strip().lower())
     return INSTRUCTION_FIELD_KEY_MAP.get(token, "")
 
 
 def _parse_instruction_fields(instructions: str) -> Tuple[Dict[str, str], List[str]]:
+    """Parse instruction text into canonical fields plus extras."""
     fields: Dict[str, str] = {}
     extras: List[str] = []
     for raw_part in str(instructions or "").split("|"):
@@ -122,6 +133,7 @@ def _parse_instruction_fields(instructions: str) -> Tuple[Dict[str, str], List[s
 
 
 def _render_instruction_fields(fields: Dict[str, str], extras: Optional[List[str]] = None) -> str:
+    """Render ordered instruction fields back into single-line format."""
     parts: List[str] = []
     for key in INSTRUCTION_FIELDS_ORDER:
         value = str(fields.get(key, "")).strip()
@@ -133,12 +145,14 @@ def _render_instruction_fields(fields: Dict[str, str], extras: Optional[List[str
 
 
 def _default_instruction_fields(role: str) -> Dict[str, str]:
+    """Return baseline instruction fields for Host1/Host2."""
     base = DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
     fields, _extras = _parse_instruction_fields(base)
     return dict(fields)
 
 
 def _split_long_tts_sentence(sentence: str, max_chars: int) -> List[str]:
+    """Split long sentences at natural punctuation before hard cuts."""
     out: List[str] = []
     remaining = str(sentence or "").strip()
     if not remaining:
@@ -174,6 +188,7 @@ def _split_long_tts_sentence(sentence: str, max_chars: int) -> List[str]:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read integer env var with fallback."""
     raw = os.environ.get(name)
     if raw is None or str(raw).strip() == "":
         return default
@@ -184,6 +199,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_str(name: str, default: str) -> str:
+    """Read string env var with trim + fallback."""
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -238,6 +254,7 @@ MALE_NAME_HINTS = {
 
 
 def _normalize_name_token(value: str) -> str:
+    """Normalize names to ascii lowercase tokens for matching."""
     token = str(value or "").strip()
     if not token:
         return ""
@@ -252,6 +269,7 @@ def _normalize_name_token(value: str) -> str:
 
 
 def _first_name_token(name: str) -> str:
+    """Extract first name token from speaker string."""
     match = FIRST_NAME_TOKEN_RE.search(str(name or ""))
     if match is None:
         return ""
@@ -259,6 +277,7 @@ def _first_name_token(name: str) -> str:
 
 
 def _infer_name_gender(name: str) -> str:
+    """Infer coarse gender hint from known first-name sets."""
     token = _first_name_token(name)
     if not token:
         return ""
@@ -270,6 +289,7 @@ def _infer_name_gender(name: str) -> str:
 
 
 def _role_voice_defaults() -> Dict[str, str]:
+    """Resolve default voices per host role from environment."""
     host1_default = _env_str("TTS_HOST1_VOICE", "cedar")
     host2_default = _env_str("TTS_HOST2_VOICE", "marin")
     return {"Host1": host1_default, "Host2": host2_default}
@@ -281,6 +301,7 @@ def voice_for(
     speaker_name: str = "",
     role_speakers: Optional[Dict[str, str]] = None,
 ) -> str:
+    """Resolve voice using role defaults and optional speaker-gender hints."""
     role_or_name = str(role_or_speaker or "").strip()
     role_defaults = _role_voice_defaults()
     fallback_voice = role_defaults.get(
@@ -308,6 +329,7 @@ def voice_for(
 
 
 def split_text_for_tts(text: str, max_chars: int) -> List[str]:
+    """Split text into sentence-aware chunks bounded by character budget."""
     safe_max_chars = max(1, int(max_chars))
     compact = re.sub(r"\s+", " ", text).strip()
     if not compact:
@@ -344,6 +366,8 @@ def split_text_for_tts(text: str, max_chars: int) -> List[str]:
 
 @dataclass
 class TTSSynthesisResult:
+    """Artifacts produced by TTS synthesis stage."""
+
     segment_files: List[str]
     manifest_path: str
     summary_path: str
@@ -352,12 +376,15 @@ class TTSSynthesisResult:
 
 @dataclass
 class TTSSynthesizer:
+    """Checkpoint-aware TTS orchestration across segment groups."""
+
     config: AudioConfig
     reliability: ReliabilityConfig
     logger: Logger
     client: OpenAIClient
 
     def _resolve_phase_for_line(self, *, line_index: int, total_lines: int) -> str:
+        """Map line position to intro/body/closing speech phase."""
         safe_total = max(1, int(total_lines))
         safe_index = max(1, min(safe_total, int(line_index)))
         intro_ratio = max(0.0, min(0.45, float(self.config.tts_phase_intro_ratio)))
@@ -385,6 +412,7 @@ class TTSSynthesizer:
         return PHASE_BODY
 
     def _speed_for_phase(self, phase: str) -> float:
+        """Resolve effective TTS speed for a phase."""
         normalized = _normalize_phase(phase)
         phase_speeds = {
             PHASE_INTRO: self.config.tts_speed_intro,
@@ -397,6 +425,7 @@ class TTSSynthesizer:
         )
 
     def _refine_instructions_for_phase(self, *, instructions: str, role: str, phase: str) -> str:
+        """Merge phase style defaults with line-level instruction overrides."""
         normalized_phase = _normalize_phase(phase)
         parsed_fields, extras = _parse_instruction_fields(instructions)
         if not parsed_fields:
@@ -411,6 +440,7 @@ class TTSSynthesizer:
         return DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
 
     def _phase_speed_metrics(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compute phase and speed statistics from manifest segments."""
         phase_counts: Dict[str, int] = {PHASE_INTRO: 0, PHASE_BODY: 0, PHASE_CLOSING: 0}
         phase_speeds: Dict[str, List[float]] = {PHASE_INTRO: [], PHASE_BODY: [], PHASE_CLOSING: []}
         all_speeds: List[float] = []
@@ -442,6 +472,7 @@ class TTSSynthesizer:
         }
 
     def _apply_phase_metrics_to_manifest(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach phase/speed metrics into manifest and return them."""
         metrics = self._phase_speed_metrics(list(manifest.get("segments", [])))
         manifest["tts_phase_counts"] = metrics["phase_counts"]
         manifest["tts_speed_stats"] = metrics["speed_stats"]
@@ -449,6 +480,7 @@ class TTSSynthesizer:
         return metrics
 
     def _build_segments(self, lines: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Convert script lines into segment-level synthesis units."""
         segments: List[Dict[str, Any]] = []
         role_speakers: Dict[str, str] = {}
         total_valid_lines = 0
@@ -515,6 +547,7 @@ class TTSSynthesizer:
         return segments
 
     def _write_audio_atomic(self, path: str, content: bytes) -> None:
+        """Write synthesized audio bytes atomically."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.tmp"
         with open(tmp, "wb") as f:
@@ -522,6 +555,7 @@ class TTSSynthesizer:
         os.replace(tmp, path)
 
     def _file_sha256(self, path: str) -> str:
+        """Compute SHA-256 checksum for an audio artifact."""
         h = hashlib.sha256()
         with open(path, "rb") as f:
             while True:
@@ -532,6 +566,7 @@ class TTSSynthesizer:
         return h.hexdigest()
 
     def _manifest_checksum(self, manifest: Dict[str, Any]) -> str:
+        """Build a deterministic checksum for manifest state tracking."""
         segments_view = []
         for seg in manifest.get("segments", []):
             segments_view.append(
@@ -557,6 +592,7 @@ class TTSSynthesizer:
         return content_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
     def _segment_counts(self, manifest: Dict[str, Any]) -> Dict[str, int]:
+        """Count manifest segments by status."""
         counts = {"pending": 0, "running": 0, "done": 0, "failed": 0}
         for seg in manifest.get("segments", []):
             st = seg.get("status", "pending")
@@ -566,6 +602,7 @@ class TTSSynthesizer:
         return counts
 
     def _ensure_chunk_metadata(self, manifest: Dict[str, Any]) -> bool:
+        """Backfill missing segment metadata in legacy manifests."""
         changed = False
         segments = [seg for seg in manifest.get("segments", []) if isinstance(seg, dict)]
         total_segments = max(1, len(segments))
@@ -605,6 +642,7 @@ class TTSSynthesizer:
         return changed
 
     def _pending_groups(self, manifest: Dict[str, Any]) -> List[Tuple[int, List[int]]]:
+        """Group pending segments by chunk id for execution strategy."""
         pending: List[Tuple[int, int]] = []
         for idx, seg in enumerate(manifest.get("segments", [])):
             if seg.get("status") == "done":
@@ -621,6 +659,7 @@ class TTSSynthesizer:
         return [(cid, grouped[cid]) for cid in sorted(grouped.keys())]
 
     def _create_pause_file(self, out_path: str, duration_ms: int) -> bool:
+        """Generate optional silent pause MP3 between spoken segments."""
         if duration_ms <= 0:
             return False
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
@@ -662,6 +701,7 @@ class TTSSynthesizer:
         manifest: Dict[str, Any],
         store: AudioCheckpointStore,
     ) -> List[str]:
+        """Build final ordered list of output segment files (with pauses)."""
         done_segments = [seg for seg in manifest["segments"] if seg.get("status") == "done"]
         sorted_done = sorted(done_segments, key=lambda x: int(x["index"]))
         files: List[str] = []
@@ -685,6 +725,7 @@ class TTSSynthesizer:
         force_unlock: bool = False,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> TTSSynthesisResult:
+        """Synthesize all pending segments and persist manifest/summary state."""
         store = AudioCheckpointStore(
             base_dir=self.config.checkpoint_dir,
             episode_id=episode_id,
@@ -709,6 +750,8 @@ class TTSSynthesizer:
 
             manifest = store.load()
             if resume:
+                # Resume path validates manifest ownership/fingerprint before any
+                # new synthesis attempt can proceed.
                 if manifest is None:
                     if store.last_corrupt_backup_path:
                         if resume_force:
@@ -785,6 +828,8 @@ class TTSSynthesizer:
                         if has_audio_file and expected_checksum and expected_checksum != actual_checksum:
                             checksum_mismatch = True
                     if status == "done":
+                        # "done" must still be validated against actual files to
+                        # avoid trusting stale manifest flags after crashes.
                         if checksum_read_error:
                             seg["status"] = "pending"
                             seg["error"] = "output_unreadable_on_resume"
@@ -866,6 +911,8 @@ class TTSSynthesizer:
             if not pending_groups:
                 self.logger.info("tts_resume_no_pending_segments")
             if self.config.cross_chunk_parallel and pending_groups:
+                # Optional mode: treat all pending segments as a single parallel
+                # pool instead of chunk-by-chunk execution.
                 merged_indexes: List[int] = []
                 for _, group_indexes in pending_groups:
                     merged_indexes.extend(group_indexes)
@@ -996,6 +1043,8 @@ class TTSSynthesizer:
                                     self.config.global_timeout_seconds > 0
                                     and (now - started) > self.config.global_timeout_seconds
                                 ):
+                                    # Global timeout controls whole synth stage,
+                                    # not just individual request attempts.
                                     abort_chunk = True
                                     for fut in not_done:
                                         fut.cancel()
@@ -1009,6 +1058,8 @@ class TTSSynthesizer:
                                     self.config.timeout_seconds * max(2, self.config.retries),
                                 )
                                 if (now - last_progress_at) > inactivity_limit:
+                                    # No completed futures for too long usually
+                                    # indicates external API/network deadlock.
                                     abort_chunk = True
                                     for fut in not_done:
                                         fut.cancel()
@@ -1036,6 +1087,8 @@ class TTSSynthesizer:
                                         seg["checksum_sha256"] = self._file_sha256(out_path)
                                         seg["updated_at"] = int(time.time())
                                         manifest["updated_at"] = int(time.time())
+                                        # Persist after each segment completion so
+                                        # resume can continue from exact progress.
                                         persist_manifest()
                                     last_progress_at = time.time()
                                     self.logger.info(
@@ -1086,6 +1139,8 @@ class TTSSynthesizer:
                     finally:
                         if abort_chunk:
                             try:
+                                # Do not wait on aborted workers: cancellation is
+                                # best-effort and we want fast interruption paths.
                                 executor.shutdown(wait=False, cancel_futures=True)
                             except TypeError:
                                 executor.shutdown(wait=False)
@@ -1127,6 +1182,8 @@ class TTSSynthesizer:
                 "tts_phase_speed_stats": phase_metrics["phase_speed_stats"],
             }
             if failed_segments:
+                # Aggregate failure kinds keeps orchestrator policy simple and
+                # still preserves per-segment detail inside manifest.
                 failed_kinds = summarize_failure_kinds(
                     seg.get("error_kind", ERROR_KIND_UNKNOWN) for seg in failed_segments
                 )
@@ -1140,6 +1197,8 @@ class TTSSynthesizer:
                 failed_kinds = summarize_failure_kinds(
                     seg.get("error_kind", ERROR_KIND_UNKNOWN) for seg in failed_segments
                 )
+                # Batch error carries per-segment context for orchestrator retry
+                # policy and incident diagnosis.
                 raise TTSBatchError(
                     manifest_path=store.manifest_path,
                     failed_segments=failed_segments,
@@ -1167,9 +1226,13 @@ class TTSSynthesizer:
                 if not current_failure_kind:
                     current_failure_kind = ERROR_KIND_UNKNOWN
                 failed_kinds = summarize_failure_kinds([current_failure_kind])
+                # Resume-blocked failures preserve existing manifest content so
+                # operators can inspect and decide whether to force-resume.
                 preserve_existing_manifest = exc.error_kind == ERROR_KIND_RESUME_BLOCKED
                 if "manifest" in locals() and isinstance(manifest, dict):
                     if not preserve_existing_manifest:
+                        # For operational failures, mark unfinished segments as
+                        # failed to leave explicit state for retries.
                         with lock:
                             segments = manifest.get("segments", [])
                             if isinstance(segments, list):
@@ -1234,6 +1297,8 @@ class TTSSynthesizer:
             try:
                 if "manifest" in locals() and isinstance(manifest, dict):
                     with lock:
+                        # Interruption status is persisted explicitly so upper
+                        # layers can map this to exit code 130 semantics.
                         manifest["status"] = "interrupted"
                         manifest["updated_at"] = int(time.time())
                         persist_manifest()

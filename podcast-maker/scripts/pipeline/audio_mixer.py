@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Audio post-processing utilities for podcast output.
+
+The mixer concatenates TTS segment MP3 files, applies loudness normalization,
+and adds a light EQ pass for final delivery quality.
+"""
+
 import json
 import os
 import re
@@ -15,6 +21,7 @@ from .logging_utils import Logger
 
 
 def _run(command: List[str], logger: Logger, *, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
+    """Execute ffmpeg command and raise on failure unless allowed."""
     logger.debug("run_command", command=" ".join(command))
     proc = subprocess.run(
         command,
@@ -34,11 +41,13 @@ def _run(command: List[str], logger: Logger, *, allow_failure: bool = False) -> 
 
 
 def _ffconcat_line(path: str) -> str:
+    """Build one safe ffconcat input line for a file path."""
     escaped = path.replace("\\", "\\\\").replace("'", "'\\''")
     return f"file '{escaped}'\n"
 
 
 def _parse_loudnorm_json(stderr_text: str) -> Optional[Dict[str, str]]:
+    """Extract `loudnorm` analysis payload from ffmpeg stderr output."""
     # ffmpeg prints a JSON object in stderr when print_format=json.
     matches = re.findall(r"\{[\s\S]*?\}", stderr_text)
     for candidate in reversed(matches):
@@ -54,6 +63,8 @@ def _parse_loudnorm_json(stderr_text: str) -> Optional[Dict[str, str]]:
 
 @dataclass
 class AudioMixResult:
+    """Final output paths produced by the mixer pipeline."""
+
     raw_path: str
     norm_path: str
     final_path: str
@@ -61,17 +72,22 @@ class AudioMixResult:
 
 @dataclass
 class AudioMixer:
+    """Concatenate and post-process synthesized segment audio."""
+
     config: AudioConfig
     logger: Logger
 
     def _ensure_dependencies(self) -> None:
+        """Validate required external dependencies for full mixing."""
         if shutil.which("ffmpeg") is None:
             raise RuntimeError("ffmpeg is required but not found in PATH")
 
     def check_dependencies(self) -> None:
+        """Public dependency probe used by callers."""
         self._ensure_dependencies()
 
     def _concat_copy(self, files: List[str], out_path: str) -> None:
+        """Try lossless concatenation using ffmpeg concat demuxer."""
         with tempfile.TemporaryDirectory() as tmp:
             concat_file = os.path.join(tmp, "concat.txt")
             with open(concat_file, "w", encoding="utf-8") as f:
@@ -96,6 +112,7 @@ class AudioMixer:
             _run(cmd, self.logger)
 
     def _concat_with_reencode_fallback(self, files: List[str], out_path: str) -> None:
+        """Concat with codec-normalization fallback when stream-copy fails."""
         try:
             self._concat_copy(files, out_path)
             return
@@ -127,6 +144,7 @@ class AudioMixer:
             self._concat_copy(normalized_paths, out_path)
 
     def _loudnorm_two_pass(self, raw_path: str, norm_path: str) -> None:
+        """Apply EBU loudness normalization using two-pass analysis."""
         base_filter = (
             f"loudnorm=I={self.config.loudnorm_i}:TP={self.config.loudnorm_tp}:"
             f"LRA={self.config.loudnorm_lra}:print_format=json"
@@ -148,6 +166,8 @@ class AudioMixer:
         analyze = _run(analyze_cmd, self.logger, allow_failure=True)
         measured = _parse_loudnorm_json(analyze.stderr or "")
         if not measured:
+            # Fall back to single-pass mode when analysis payload cannot be
+            # parsed (keeps pipeline moving in constrained environments).
             self.logger.warn("loudnorm_analysis_failed_fallback_to_single_pass")
             fallback_cmd = [
                 "ffmpeg",
@@ -186,6 +206,7 @@ class AudioMixer:
         _run(cmd, self.logger)
 
     def _apply_eq(self, norm_path: str, final_path: str) -> None:
+        """Apply final EQ sweetening pass on normalized audio."""
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -201,6 +222,7 @@ class AudioMixer:
         _run(cmd, self.logger)
 
     def mix(self, *, segment_files: List[str], outdir: str, basename: str) -> AudioMixResult:
+        """Run full mixing pipeline and return output artifact paths."""
         self._ensure_dependencies()
         if not segment_files:
             raise RuntimeError("No segment files to mix")
@@ -232,6 +254,7 @@ class AudioMixer:
             os.replace(norm_tmp, norm_path)
             os.replace(final_tmp, final_path)
         except Exception:
+            # Best-effort temp cleanup to avoid leaving partial artifacts around.
             for tmp_path in (raw_tmp, norm_tmp, final_tmp):
                 try:
                     if os.path.exists(tmp_path):

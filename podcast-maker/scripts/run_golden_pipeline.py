@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""Generate golden candidate scripts by running production script pipeline."""
+
 import argparse
 import json
 import os
@@ -11,6 +13,7 @@ from typing import Any, Dict, List
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI args for golden-candidate generation runs."""
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = os.path.abspath(os.path.join(scripts_dir, ".."))
     parser = argparse.ArgumentParser(
@@ -31,6 +34,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_cases(path: str) -> List[Dict[str, Any]]:
+    """Load and validate golden case definitions from JSON array."""
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     if not isinstance(payload, list):
@@ -45,10 +49,12 @@ def _load_cases(path: str) -> List[Dict[str, Any]]:
 
 
 def _repo_root() -> str:
+    """Return repository root path relative to this script."""
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 
 def main() -> int:
+    """Run all configured golden cases and write run report."""
     args = parse_args()
     repo_root = _repo_root()
     cases_path = os.path.abspath(args.cases_path)
@@ -114,6 +120,8 @@ def main() -> int:
         }
         run_report["results"].append(result)
         if not ok:
+            # Keep per-case tails for debugging while allowing optional
+            # early-stop behavior in constrained environments.
             failures += 1
             if args.stop_on_error:
                 break
