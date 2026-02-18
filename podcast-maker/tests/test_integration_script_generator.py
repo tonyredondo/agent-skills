@@ -1057,9 +1057,31 @@ class ScriptGeneratorIntegrationTests(unittest.TestCase):
                 {"lines": [{"speaker": "A"}]},
                 "schema error",
             )
-        self.assertIn("optional pace_hint", chunk_prompt)
-        self.assertIn("Optional field `pace_hint`: calm|steady|brisk.", chunk_prompt)
-        self.assertIn("optional pace_hint", repair_prompt)
+        self.assertIn("instructions, pace_hint, text", chunk_prompt)
+        self.assertIn("Required field `pace_hint`: calm|steady|brisk|null.", chunk_prompt)
+        self.assertIn("include at least one `brisk` and one `calm`", chunk_prompt)
+        self.assertIn("instructions, pace_hint, text", repair_prompt)
+
+    def test_prompts_enable_speed_hints_by_default_when_env_unset(self) -> None:
+        cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, words_per_min=120, min_words=80, max_words=120)
+        reliability = ReliabilityConfig.from_env()
+        logger = Logger.create(
+            LoggingConfig(level="ERROR", heartbeat_seconds=1, debug_events=False, include_event_ids=False)
+        )
+        client = FakeScriptClient()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            gen = ScriptGenerator(config=cfg, reliability=reliability, logger=logger, client=client)  # type: ignore[arg-type]
+            section_plan = {"objective": "Expand", "topic": "IA", "target_words": 120}
+            chunk_prompt = gen._build_chunk_prompt(  # noqa: SLF001
+                source_chunk="contenido fuente base",
+                chunk_idx=1,
+                chunk_total=2,
+                section_plan=section_plan,
+                lines_so_far=[],
+                min_words=cfg.min_words,
+                max_words=cfg.max_words,
+            )
+        self.assertIn("Required field `pace_hint`: calm|steady|brisk|null.", chunk_prompt)
 
     def test_extract_source_authors_from_metadata_line(self) -> None:
         cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, words_per_min=120, min_words=80, max_words=120)

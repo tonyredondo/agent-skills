@@ -55,10 +55,10 @@ SCRIPT_JSON_SCHEMA: Dict[str, Any] = {
                     "speaker": {"type": "string"},
                     "role": {"type": "string"},
                     "instructions": {"type": "string"},
-                    "pace_hint": {"type": "string"},
+                    "pace_hint": {"type": ["string", "null"]},
                     "text": {"type": "string"},
                 },
-                "required": ["speaker", "role", "instructions", "text"],
+                "required": ["speaker", "role", "instructions", "pace_hint", "text"],
                 "additionalProperties": False,
             },
         }

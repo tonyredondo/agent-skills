@@ -165,14 +165,14 @@ def _tts_speed_hints_enabled() -> bool:
     """Return whether optional pace-hint prompting is enabled."""
     raw = os.environ.get("TTS_SPEED_HINTS_ENABLED")
     if raw is None:
-        return False
+        return True
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _line_schema_fields_prompt() -> str:
     """Describe expected JSON line fields for repair prompts."""
     if _tts_speed_hints_enabled():
-        return "speaker, role, instructions, optional pace_hint, text"
+        return "speaker, role, instructions, pace_hint, text"
     return "speaker, role, instructions, text"
 
 
@@ -181,10 +181,12 @@ def _pace_hint_prompt_guidance() -> str:
     if not _tts_speed_hints_enabled():
         return ""
     return (
-        "- Optional field `pace_hint`: calm|steady|brisk.\n"
-        "- Prefer `steady` by default and only use `calm`/`brisk` for clear delivery intent.\n"
+        "- Required field `pace_hint`: calm|steady|brisk|null.\n"
+        "- Keep delivery dynamic: avoid all-`steady` repairs when context supports variation.\n"
+        "- For scripts with >= 8 lines, include at least one `brisk` and one `calm` where narratively natural.\n"
+        "- Use `brisk` for energetic turns and action-oriented transitions; use `calm` for reflective or closing turns.\n"
         "- Keep adjacent turns coherent; avoid rapid oscillation unless narratively justified.\n"
-        "- If pace intent is unclear, omit `pace_hint`."
+        "- If pace intent is unclear, set `pace_hint` to null."
     )
 
 SOURCE_CATEGORY_ALIAS_HINTS: Dict[str, tuple[str, ...]] = {

@@ -130,12 +130,12 @@ class ScriptGenerator:
 
     def _tts_speed_hints_enabled(self) -> bool:
         """Return whether optional pace-hint prompting is enabled."""
-        return _env_bool("TTS_SPEED_HINTS_ENABLED", False)
+        return _env_bool("TTS_SPEED_HINTS_ENABLED", True)
 
     def _line_schema_fields_prompt(self) -> str:
         """Describe expected JSON line keys for current runtime mode."""
         if self._tts_speed_hints_enabled():
-            return "speaker, role, instructions, optional pace_hint, text"
+            return "speaker, role, instructions, pace_hint, text"
         return "speaker, role, instructions, text"
 
     def _pace_hint_prompt_guidance(self) -> str:
@@ -143,10 +143,14 @@ class ScriptGenerator:
         if not self._tts_speed_hints_enabled():
             return ""
         return (
-            "- Optional field `pace_hint`: calm|steady|brisk.\n"
-            "- Prefer `steady` by default; use `calm`/`brisk` only for clear narrative intent.\n"
-            "- Keep adjacent turns coherent; avoid oscillating pace_hint values without a clear reason.\n"
-            "- If there is no clear pace signal, omit `pace_hint`."
+            "- Required field `pace_hint`: calm|steady|brisk|null.\n"
+            "- Keep delivery dynamic: do not keep all lines as `steady`.\n"
+            "- For scripts with >= 8 lines, include at least one `brisk` and one `calm` where narratively natural.\n"
+            "- Prefer `brisk` for energetic openings, transitions, and actionable calls.\n"
+            "- Prefer `calm` for nuanced explanations, cautions, and closing recap/farewell.\n"
+            "- Keep adjacent turns coherent; avoid abrupt oscillations unless there is a clear narrative shift.\n"
+            "- Avoid long flat runs: do not keep more than 3 consecutive lines with the same non-null pace_hint unless justified.\n"
+            "- If there is no clear pace signal, set `pace_hint` to null."
         )
 
     def _can_use_contextual_fallback_llm(self) -> bool:
