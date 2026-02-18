@@ -160,6 +160,35 @@ SOURCE_BALANCE_STOPWORDS = {
     "porque",
 }
 
+
+def _tts_speed_hints_enabled() -> bool:
+    """Return whether optional pace-hint prompting is enabled."""
+    raw = os.environ.get("TTS_SPEED_HINTS_ENABLED")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _line_schema_fields_prompt() -> str:
+    """Describe expected JSON line fields for repair prompts."""
+    if _tts_speed_hints_enabled():
+        return "speaker, role, instructions, pace_hint, text"
+    return "speaker, role, instructions, text"
+
+
+def _pace_hint_prompt_guidance() -> str:
+    """Prompt block for optional pace_hint guidance when feature flag is on."""
+    if not _tts_speed_hints_enabled():
+        return ""
+    return (
+        "- Required field `pace_hint`: calm|steady|brisk|null.\n"
+        "- Keep delivery dynamic: avoid all-`steady` repairs when context supports variation.\n"
+        "- For scripts with >= 8 lines, include at least one `brisk` and one `calm` where narratively natural.\n"
+        "- Use `brisk` for energetic turns and action-oriented transitions; use `calm` for reflective or closing turns.\n"
+        "- Keep adjacent turns coherent; avoid rapid oscillation unless narratively justified.\n"
+        "- If pace intent is unclear, set `pace_hint` to null."
+    )
+
 SOURCE_CATEGORY_ALIAS_HINTS: Dict[str, tuple[str, ...]] = {
     "psychology": (
         "psicologia",
@@ -1205,6 +1234,8 @@ def _build_repair_prompt(
     quality_cfg: ScriptQualityGateConfig,
 ) -> str:
     """Build repair prompt from report reasons + bounded payload snapshot."""
+    line_fields = _line_schema_fields_prompt()
+    pace_hint_guidance = _pace_hint_prompt_guidance()
     reasons = report.get("reasons", [])
     reason_lines: List[str] = []
     if isinstance(reasons, list):
@@ -1223,10 +1254,13 @@ def _build_repair_prompt(
 
         Constraints:
         - Return ONLY JSON object with key "lines".
-        - Keep each line fields: speaker, role, instructions, text.
+        - Keep each line fields: {line_fields}.
         - role must be Host1 or Host2.
         - Keep spoken text in Spanish.
-        - Keep instructions in English single-line format.
+        - Keep instructions in English as short natural-language guidance (1-2 sentences).
+        - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+        {pace_hint_guidance}
+        - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
         - Preserve conversation flow and avoid generic filler.
         - Do not include internal workflow/tooling disclosures in spoken text (for example script paths, shell commands, DailyRead pipeline notes, Tavily, Serper).
         - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
@@ -1298,6 +1332,8 @@ def _build_open_question_tail_repair_prompt(
     source_context: str | None,
 ) -> str:
     """Build focused prompt for tail/closing quality repair."""
+    line_fields = _line_schema_fields_prompt()
+    pace_hint_guidance = _pace_hint_prompt_guidance()
     compact = canonical_json(payload)
     if len(compact) > quality_cfg.repair_max_input_chars:
         compact = compact[: quality_cfg.repair_max_input_chars]
@@ -1318,7 +1354,7 @@ def _build_open_question_tail_repair_prompt(
     return textwrap.dedent(
         f"""
         You are repairing a Spanish podcast script JSON that fails quality checks near the ending.
-        Return ONLY JSON object with key "lines" and fields: speaker, role, instructions, text.
+        Return ONLY JSON object with key "lines" and fields: {line_fields}.
 
         Main issue(s):
         {reasons_text}
@@ -1332,7 +1368,10 @@ def _build_open_question_tail_repair_prompt(
         - Keep the final flow natural: answer/closure -> concise recap -> short farewell.
 
         Constraints:
-        - Keep spoken text in Spanish and instructions in English single-line format.
+        - Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
+        - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+        {pace_hint_guidance}
+        - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
         - Keep role values Host1/Host2 and maintain strict alternation.
         - Preserve facts and avoid inventing names, dates, numbers, or tools not present in source/context.
         - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").

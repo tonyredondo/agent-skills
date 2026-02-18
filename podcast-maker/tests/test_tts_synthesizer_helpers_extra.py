@@ -43,7 +43,8 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         lines = [{"speaker": "Ana", "role": "Host2", "instructions": "", "text": "hola mundo desde aqui"}]
         segments = self.synth._build_segments(lines)
         self.assertGreaterEqual(len(segments), 1)
-        self.assertIn("Voice Affect:", segments[0]["instructions"])
+        self.assertIn("Speak in a bright, friendly, conversational tone.", segments[0]["instructions"])
+        self.assertNotIn("|", segments[0]["instructions"])
         self.assertEqual(segments[0]["voice"], "marin")
 
     def test_build_segments_assigns_voice_from_speaker_name_hints(self) -> None:
@@ -90,6 +91,12 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
                     "error_kind": "",
                     "phase": "closing",
                     "speed": self.cfg.tts_speed_closing,
+                    "pace_hint": "",
+                    "pace_hint_applied": False,
+                    "pace_hint_invalid": False,
+                    "speed_hint_delta_clamped": False,
+                    "speed_hint_fallback_1x": False,
+                    "speed_hint_resume_seed_missing": False,
                 }
             ]
         }
@@ -112,10 +119,11 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         self.assertEqual(segments[0]["speed"], self.cfg.tts_speed_intro)
         self.assertEqual(segments[-1]["phase"], "closing")
         self.assertEqual(segments[-1]["speed"], self.cfg.tts_speed_closing)
-        self.assertIn("Tone:", segments[0]["instructions"])
+        self.assertIn("Speak in a warm, confident, conversational tone.", segments[0]["instructions"])
+        self.assertIn("For this intro segment", segments[0]["instructions"])
         self.assertNotIn(" x ", f" {segments[0]['instructions']} ")
 
-    def test_build_segments_preserves_structured_custom_instruction_fields(self) -> None:
+    def test_build_segments_keeps_structured_instruction_when_provided(self) -> None:
         lines = [
             {
                 "speaker": "Ana",
@@ -130,8 +138,8 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         segments = self.synth._build_segments(lines)
         instructions = segments[0]["instructions"]
         self.assertIn("Tone: Formal y pausado", instructions)
-        self.assertIn("Pacing: Lento", instructions)
-        self.assertIn("Emotion: Calma", instructions)
+        self.assertIn("|", instructions)
+        self.assertIn("Keep an analytical, steady delivery focused on clarity.", instructions)
 
     def test_build_segments_guarantees_intro_and_closing_for_short_valid_scripts(self) -> None:
         lines = [
@@ -165,6 +173,61 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(manifest["segments"][0]["phase"], "body")
         self.assertEqual(manifest["segments"][0]["speed"], self.cfg.tts_speed_body)
+
+    def test_resolve_segment_speed_applies_hint_multiplier_and_smoothing(self) -> None:
+        synth = dataclasses.replace(
+            self.synth,
+            config=dataclasses.replace(
+                self.cfg,
+                tts_speed_hints_enabled=True,
+                tts_speed_body=1.0,
+                tts_speed_hints_max_delta=0.05,
+            ),
+        )
+        first = synth._resolve_segment_speed(phase="body", pace_hint="brisk", previous_speed=None)
+        second = synth._resolve_segment_speed(
+            phase="body",
+            pace_hint="brisk",
+            previous_speed=float(first["effective_speed"]),
+        )
+        self.assertEqual(first["effective_speed"], 1.08)
+        self.assertTrue(first["pace_hint_applied"])
+        self.assertEqual(second["effective_speed"], 1.08)
+        self.assertFalse(second["speed_hint_delta_clamped"])
+
+    def test_resolve_segment_speed_clamps_delta_when_hint_jumps(self) -> None:
+        synth = dataclasses.replace(
+            self.synth,
+            config=dataclasses.replace(
+                self.cfg,
+                tts_speed_hints_enabled=True,
+                tts_speed_intro=1.0,
+                tts_speed_hints_max_delta=0.02,
+            ),
+        )
+        resolved = synth._resolve_segment_speed(
+            phase="intro",
+            pace_hint="brisk",
+            previous_speed=1.0,
+        )
+        self.assertEqual(resolved["effective_speed"], 1.02)
+        self.assertTrue(resolved["speed_hint_delta_clamped"])
+
+    def test_refine_instructions_aligns_conflicting_cadence_with_calm_hint(self) -> None:
+        synth = dataclasses.replace(
+            self.synth,
+            config=dataclasses.replace(self.cfg, tts_speed_hints_enabled=True),
+        )
+        refined = synth._refine_instructions_for_phase(
+            instructions="Use a clear fast delivery with quick pacing.",
+            role="Host1",
+            phase="body",
+            speed=0.94,
+            pace_hint="calm",
+        )
+        self.assertIn("calm", refined.lower())
+        self.assertNotIn("quickly", refined.lower())
+        self.assertNotIn("fast rhythm", refined.lower())
 
     def test_ensure_chunk_metadata_assigns_missing_phases_by_segment_order(self) -> None:
         manifest = {

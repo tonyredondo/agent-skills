@@ -5,13 +5,43 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from typing import Any, Dict, List
 
-DEFAULT_INSTRUCTIONS = (
-    "Voice Affect: Warm and confident | Tone: Conversational | "
-    "Pacing: Measured | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief"
+DEFAULT_HOST1_INSTRUCTIONS = (
+    "Speak in a warm, confident, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
 )
+DEFAULT_HOST2_INSTRUCTIONS = (
+    "Speak in a bright, friendly, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
+)
+DEFAULT_INSTRUCTIONS = DEFAULT_HOST1_INSTRUCTIONS
+MAX_INSTRUCTIONS_CHARS = 220
+AMBIGUOUS_INSTRUCTION_PHRASES = (
+    "speak naturally",
+    "do your best",
+    "good voice",
+)
+ACTIONABLE_INSTRUCTION_HINTS = (
+    "tone",
+    "pacing",
+    "pace",
+    "clarity",
+    "clear",
+    "pronounce",
+    "pronunciation",
+    "warm",
+    "friendly",
+    "confident",
+    "analytical",
+    "inviting",
+    "energetic",
+    "appreciative",
+    "delivery",
+    "cadence",
+    "pause",
+)
+PACE_HINT_VALUES = {"calm", "steady", "brisk"}
 
 
 SCRIPT_JSON_SCHEMA: Dict[str, Any] = {
@@ -25,9 +55,10 @@ SCRIPT_JSON_SCHEMA: Dict[str, Any] = {
                     "speaker": {"type": "string"},
                     "role": {"type": "string"},
                     "instructions": {"type": "string"},
+                    "pace_hint": {"type": ["string", "null"]},
                     "text": {"type": "string"},
                 },
-                "required": ["speaker", "role", "instructions", "text"],
+                "required": ["speaker", "role", "instructions", "pace_hint", "text"],
                 "additionalProperties": False,
             },
         }
@@ -45,11 +76,94 @@ def load_json_text(text: str) -> Dict[str, Any]:
     return value
 
 
-def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
+def _default_instructions_for_role(role: str) -> str:
+    """Return deterministic default instruction text for host role."""
+    if str(role or "").strip() == "Host2":
+        return DEFAULT_HOST2_INSTRUCTIONS
+    return DEFAULT_HOST1_INSTRUCTIONS
+
+
+def _normalize_instruction_whitespace(value: str) -> str:
+    """Collapse whitespace into single spaces without regex-heavy parsing."""
+    return " ".join(str(value or "").strip().split())
+
+
+def _sentence_count(text: str) -> int:
+    """Count coarse sentence boundaries using simple punctuation checks."""
+    count = 0
+    in_sentence = False
+    for ch in str(text or ""):
+        if ch.strip():
+            in_sentence = True
+        if ch in ".!?" and in_sentence:
+            count += 1
+            in_sentence = False
+    if in_sentence:
+        count += 1
+    return count
+
+
+def _has_actionable_instruction_detail(text: str) -> bool:
+    """Heuristic check: instruction should include delivery/tone details."""
+    lowered = str(text or "").lower()
+    return any(token in lowered for token in ACTIONABLE_INSTRUCTION_HINTS)
+
+
+def _looks_ambiguous_instruction(text: str) -> bool:
+    """Detect vague template-like instructions lacking concrete guidance."""
+    lowered = str(text or "").lower()
+    if not lowered:
+        return True
+    for phrase in AMBIGUOUS_INSTRUCTION_PHRASES:
+        if phrase in lowered and not _has_actionable_instruction_detail(lowered):
+            return True
+    return False
+
+
+def _normalize_instructions_for_line(
+    *,
+    instructions: str,
+    role: str,
+) -> str:
+    """Normalize instruction string and enforce hard-cut contract semantics."""
+    cleaned = _normalize_instruction_whitespace(instructions)
+    if not cleaned:
+        return _default_instructions_for_role(role)
+
+    if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+        cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+
+    if _sentence_count(cleaned) > 2:
+        return _default_instructions_for_role(role)
+
+    if _looks_ambiguous_instruction(cleaned):
+        return _default_instructions_for_role(role)
+
+    if not _has_actionable_instruction_detail(cleaned):
+        return _default_instructions_for_role(role)
+
+    return cleaned
+
+
+def _normalize_pace_hint(value: Any) -> str:
+    """Normalize optional per-line pace hint to canonical enum value."""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in PACE_HINT_VALUES:
+        return raw
+    return ""
+
+
+def normalize_line(
+    raw: Dict[str, Any],
+    idx: int,
+) -> Dict[str, Any]:
     """Normalize one dialogue line into canonical schema fields."""
     speaker = str(raw.get("speaker", "")).strip()
     role = str(raw.get("role", "")).strip()
     instructions = str(raw.get("instructions", "")).strip()
+    pace_hint = _normalize_pace_hint(raw.get("pace_hint"))
     text = str(raw.get("text", "")).strip()
     if not speaker:
         raise ValueError(f"line[{idx}] missing speaker")
@@ -59,28 +173,38 @@ def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
         role = "Host1" if idx % 2 == 0 else "Host2"
     if not text:
         raise ValueError(f"line[{idx}] missing text")
-    if not instructions:
-        # Keep a single-line format expected by TTS.
-        instructions = DEFAULT_INSTRUCTIONS
-    instructions = re.sub(r"\s+", " ", instructions).strip()
-    return {
+    instructions = _normalize_instructions_for_line(
+        instructions=instructions,
+        role=role,
+    )
+    normalized: Dict[str, Any] = {
         "speaker": speaker,
         "role": role,
         "instructions": instructions,
         "text": text,
     }
+    if pace_hint:
+        normalized["pace_hint"] = pace_hint
+    return normalized
 
 
-def validate_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+def validate_script_payload(
+    payload: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
     """Validate/normalize payload and ensure non-empty `lines` list."""
     lines = payload.get("lines", [])
     if not isinstance(lines, list):
         raise ValueError("'lines' must be a list")
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for idx, item in enumerate(lines):
         if not isinstance(item, dict):
             raise ValueError(f"line[{idx}] must be object")
-        out.append(normalize_line(item, idx))
+        out.append(
+            normalize_line(
+                item,
+                idx,
+            )
+        )
     if not out:
         raise ValueError("script has no lines")
     return {"lines": out}
@@ -149,7 +273,9 @@ def _extract_candidate_lines(payload: Dict[str, Any]) -> List[Any]:
     return candidates
 
 
-def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+def salvage_script_payload(
+    payload: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
     """Best-effort salvage of malformed payload into canonical `lines`."""
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
@@ -157,7 +283,7 @@ def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, 
     if not raw_lines:
         raise ValueError("no candidate lines found for salvage")
 
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     seen_keys: set[str] = set()
     for idx, item in enumerate(raw_lines):
         if not isinstance(item, dict):
@@ -173,6 +299,7 @@ def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, 
         instructions = _coerce_text_value(
             item.get("instructions") or item.get("instruction") or item.get("style")
         )
+        pace_hint = _normalize_pace_hint(item.get("pace_hint"))
         text = _coerce_text_value(
             item.get("text")
             or item.get("line")
@@ -196,20 +323,25 @@ def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, 
                 instructions = instructions or _coerce_text_value(
                     nested.get("instructions") or nested.get("instruction")
                 )
+                pace_hint = pace_hint or _normalize_pace_hint(nested.get("pace_hint"))
         if not text:
             continue
         if not role or role not in {"Host1", "Host2"}:
             role = "Host1" if len(out) % 2 == 0 else "Host2"
         if not speaker:
             speaker = "Host One" if role == "Host1" else "Host Two"
-        if not instructions:
-            instructions = DEFAULT_INSTRUCTIONS
-        normalized = {
+        instructions = _normalize_instructions_for_line(
+            instructions=instructions,
+            role=role,
+        )
+        normalized: Dict[str, Any] = {
             "speaker": speaker,
             "role": role,
-            "instructions": re.sub(r"\s+", " ", instructions).strip(),
+            "instructions": instructions,
             "text": text,
         }
+        if pace_hint:
+            normalized["pace_hint"] = pace_hint
         key = dedupe_key(normalized)
         if key in seen_keys:
             continue
@@ -244,12 +376,13 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def dedupe_key(line: Dict[str, str]) -> str:
+def dedupe_key(line: Dict[str, Any]) -> str:
     """Compute content-based dedupe key for one line."""
     normalized = (
         f"{line.get('speaker','')}|"
         f"{line.get('role','')}|"
         f"{line.get('instructions','')}|"
+        f"{line.get('pace_hint','')}|"
         f"{line.get('text','')}"
     ).strip()
     return content_hash(normalized.lower())

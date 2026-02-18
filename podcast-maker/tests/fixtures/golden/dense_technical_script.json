@@ -3,61 +3,61 @@
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Analizamos arquitectura orientada a eventos con colas y procesamiento asincrono."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Revisamos particionado, ordering guarantees y manejo de duplicados en consumidores."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En observabilidad cubrimos tracing distribuido, metricas y correlacion por request id."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Para resiliencia aplicamos retries con backoff, timeouts y circuit breakers acotados."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Tambien tratamos idempotencia, deduplicacion y consistencia eventual entre servicios."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "La capa de datos exige migraciones seguras y versionado compatible de contratos."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Cerramos con estrategia de canary rollout y rollback automatico por SLOs."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En Resumen: diseno robusto requiere telemetria, control de fallos y pruebas de caos."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Gracias por escucharnos en este episodio tecnico."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Nos vemos en el proximo episodio."
     }
   ]

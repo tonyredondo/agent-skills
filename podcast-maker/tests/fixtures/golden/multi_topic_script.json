@@ -3,55 +3,55 @@
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Hoy unimos tres temas: productividad, comunicacion y calidad tecnica."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En productividad proponemos bloques cortos con objetivos concretos y medibles."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En comunicacion recomendamos acuerdos escritos y seguimiento semanal simple."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En calidad tecnica insistimos en pruebas automaticas y despliegue gradual."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Relacionar estos temas evita cuellos de botella y mejora resultados."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Tambien ayuda a escalar sin perder visibilidad del avance real."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En Resumen: foco por bloques, acuerdos claros y calidad continua."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Gracias por escucharnos y compartir este recorrido de varios temas."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Nos vemos en el proximo episodio."
     }
   ]

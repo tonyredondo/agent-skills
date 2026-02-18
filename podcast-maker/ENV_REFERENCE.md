@@ -110,6 +110,13 @@ Profile source-validation defaults:
 | `TTS_SPEED_CLOSING` | `1.0` | Closing speed |
 | `TTS_PHASE_INTRO_RATIO` | `0.15` | Intro segment ratio |
 | `TTS_PHASE_CLOSING_RATIO` | `0.15` | Closing segment ratio |
+| `TTS_SPEED_HINTS_ENABLED` | `1` | Enables optional LLM `pace_hint` (`calm|steady|brisk`) |
+| `TTS_SPEED_HINTS_MAX_DELTA` | `0.08` | Max per-segment smoothing delta when hints are enabled |
+
+`TTS_SPEED_HINTS_ENABLED` / `TTS_SPEED_HINTS_MAX_DELTA` are treated as runtime tuning knobs:
+- they do not invalidate audio resume fingerprints;
+- mismatches on resume are tolerated (warning + continue);
+- hint/smoothing failures fall back to `speed=1.0` without aborting the pipeline.
 
 ## Script Quality Gate (script_quality_gate_config.py)
 

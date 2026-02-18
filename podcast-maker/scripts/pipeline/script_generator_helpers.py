@@ -130,12 +130,14 @@ def migrate_checkpoint_lines(raw_lines: Any) -> List[Dict[str, str]]:
             continue
         role = str(item.get("role") or "").strip() or ("Host1" if idx % 2 == 0 else "Host2")
         instructions = str(item.get("instructions") or "").strip()
+        pace_hint = str(item.get("pace_hint") or "").strip().lower()
         migrated.append(
             {
                 "speaker": speaker,
                 "role": role,
                 "instructions": instructions,
                 "text": text,
+                **({"pace_hint": pace_hint} if pace_hint in {"calm", "steady", "brisk"} else {}),
             }
         )
     return migrated

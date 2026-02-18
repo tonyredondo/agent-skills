@@ -13,6 +13,7 @@ if SCRIPTS_DIR not in sys.path:
 
 from pipeline.config import ScriptConfig  # noqa: E402
 from pipeline.errors import ERROR_KIND_SCRIPT_QUALITY  # noqa: E402
+from pipeline.schema import validate_script_payload  # noqa: E402
 from pipeline.script_quality_gate import (  # noqa: E402
     ScriptQualityGateConfig,
     attempt_script_quality_repair,
@@ -1600,7 +1601,7 @@ class ScriptQualityGateTests(unittest.TestCase):
         self.assertFalse(bool(outcome["repaired"]))
         self.assertFalse(bool(outcome["report"]["repair_succeeded"]))
         self.assertFalse(bool(outcome["report"]["repair_changed_script"]))
-        self.assertEqual(outcome["payload"], initial_payload)
+        self.assertEqual(outcome["payload"], validate_script_payload(initial_payload))
         history = list(outcome["report"].get("repair_history", []))
         self.assertTrue(any(str(item.get("status")) == "rejected_guardrail" for item in history))
 
@@ -1641,7 +1642,7 @@ class ScriptQualityGateTests(unittest.TestCase):
         self.assertTrue(bool(outcome["repaired"]))
         self.assertFalse(bool(outcome["report"]["pass"]))
         self.assertFalse(bool(outcome["report"]["repair_succeeded"]))
-        self.assertEqual(outcome["payload"], repaired_payload)
+        self.assertEqual(outcome["payload"], validate_script_payload(repaired_payload))
 
     def test_attempt_script_quality_repair_scales_output_budget_for_large_payload(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

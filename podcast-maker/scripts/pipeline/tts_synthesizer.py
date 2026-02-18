@@ -41,46 +41,72 @@ from .schema import content_hash
 
 
 DEFAULT_HOST1_INSTR = (
-    "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | "
-    "Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief"
+    "Speak in a warm, confident, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
 )
 DEFAULT_HOST2_INSTR = (
-    "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | "
-    "Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief"
+    "Speak in a bright, friendly, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
 )
+MAX_INSTRUCTIONS_CHARS = 220
 
 PHASE_INTRO = "intro"
 PHASE_BODY = "body"
 PHASE_CLOSING = "closing"
 VALID_SPEECH_PHASES = {PHASE_INTRO, PHASE_BODY, PHASE_CLOSING}
-INSTRUCTION_FIELDS_ORDER = (
-    "Voice Affect",
-    "Tone",
-    "Pacing",
-    "Emotion",
-    "Pronunciation",
-    "Pauses",
+PHASE_INSTRUCTION_OVERLAYS: Dict[str, str] = {
+    PHASE_INTRO: "For this intro segment, sound inviting and energetic without rushing.",
+    PHASE_BODY: "Keep an analytical, steady delivery focused on clarity.",
+    PHASE_CLOSING: "Use a warm, appreciative cadence for the closing summary and farewell.",
+}
+ACTIONABLE_INSTRUCTION_HINTS = (
+    "tone",
+    "pacing",
+    "pace",
+    "clarity",
+    "clear",
+    "pronounce",
+    "pronunciation",
+    "warm",
+    "friendly",
+    "confident",
+    "analytical",
+    "inviting",
+    "energetic",
+    "appreciative",
+    "delivery",
+    "cadence",
+    "pause",
 )
-INSTRUCTION_FIELD_KEY_MAP = {re.sub(r"[^a-z]", "", field.lower()): field for field in INSTRUCTION_FIELDS_ORDER}
-PHASE_STYLE_OVERRIDES: Dict[str, Dict[str, str]] = {
-    PHASE_INTRO: {
-        "Tone": "Conversational and inviting",
-        "Pacing": "Brisk but clear",
-        "Emotion": "Enthusiasm",
-        "Pauses": "Brief",
-    },
-    PHASE_BODY: {
-        "Tone": "Conversational and analytical",
-        "Pacing": "Measured",
-        "Emotion": "Focus",
-        "Pauses": "Balanced",
-    },
-    PHASE_CLOSING: {
-        "Tone": "Warm and appreciative",
-        "Pacing": "Calm",
-        "Emotion": "Gratitude",
-        "Pauses": "Slightly longer",
-    },
+AMBIGUOUS_INSTRUCTION_PHRASES = (
+    "speak naturally",
+    "do your best",
+    "good voice",
+)
+SLOW_CADENCE_HINTS = (
+    "slowly",
+    "slower",
+    "unhurried",
+    "leisurely",
+    "long pause",
+    "long pauses",
+)
+FAST_CADENCE_HINTS = (
+    "fast",
+    "faster",
+    "quick",
+    "quickly",
+    "rapid",
+    "rapidly",
+    "brisk",
+    "rushed",
+    "hurried",
+)
+PACE_HINT_VALUES = {"calm", "steady", "brisk"}
+PACE_HINT_MULTIPLIERS = {
+    "calm": 0.94,
+    "steady": 1.00,
+    "brisk": 1.08,
 }
 
 
@@ -105,50 +131,64 @@ def _normalize_phase(value: str) -> str:
     return PHASE_BODY
 
 
-def _normalize_instruction_key(value: str) -> str:
-    """Normalize instruction keys to canonical field names."""
-    token = re.sub(r"[^a-z]", "", str(value or "").strip().lower())
-    return INSTRUCTION_FIELD_KEY_MAP.get(token, "")
+def _default_instructions_for_role(role: str) -> str:
+    """Return deterministic defaults for known host roles."""
+    if str(role or "").strip() == "Host2":
+        return DEFAULT_HOST2_INSTR
+    return DEFAULT_HOST1_INSTR
 
 
-def _parse_instruction_fields(instructions: str) -> Tuple[Dict[str, str], List[str]]:
-    """Parse instruction text into canonical fields plus extras."""
-    fields: Dict[str, str] = {}
-    extras: List[str] = []
-    for raw_part in str(instructions or "").split("|"):
-        part = raw_part.strip()
-        if not part:
-            continue
-        if ":" not in part:
-            extras.append(part)
-            continue
-        key_raw, value_raw = part.split(":", 1)
-        canonical_key = _normalize_instruction_key(key_raw)
-        value = str(value_raw or "").strip()
-        if canonical_key and value:
-            fields[canonical_key] = value
-        else:
-            extras.append(part)
-    return fields, extras
+def _clean_instruction_text(value: str) -> str:
+    """Normalize instruction whitespace into a single compact line."""
+    return " ".join(str(value or "").strip().split())
 
 
-def _render_instruction_fields(fields: Dict[str, str], extras: Optional[List[str]] = None) -> str:
-    """Render ordered instruction fields back into single-line format."""
-    parts: List[str] = []
-    for key in INSTRUCTION_FIELDS_ORDER:
-        value = str(fields.get(key, "")).strip()
-        if value:
-            parts.append(f"{key}: {value}")
-    if extras:
-        parts.extend(part for part in extras if str(part).strip())
-    return " | ".join(parts).strip()
+def _normalize_pace_hint(value: Any) -> str:
+    """Normalize optional pace hint values to canonical enum."""
+    hint = str(value or "").strip().lower()
+    if hint in PACE_HINT_VALUES:
+        return hint
+    return ""
 
 
-def _default_instruction_fields(role: str) -> Dict[str, str]:
-    """Return baseline instruction fields for Host1/Host2."""
-    base = DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
-    fields, _extras = _parse_instruction_fields(base)
-    return dict(fields)
+def _instruction_sentence_count(text: str) -> int:
+    """Count coarse sentence boundaries using basic punctuation markers."""
+    count = 0
+    in_sentence = False
+    for ch in str(text or ""):
+        if ch.strip():
+            in_sentence = True
+        if ch in ".!?" and in_sentence:
+            count += 1
+            in_sentence = False
+    if in_sentence:
+        count += 1
+    return count
+
+
+def _has_actionable_instruction_detail(text: str) -> bool:
+    """Detect whether instruction includes actionable speaking guidance."""
+    lowered = str(text or "").lower()
+    return any(token in lowered for token in ACTIONABLE_INSTRUCTION_HINTS)
+
+
+def _looks_ambiguous_instruction(text: str) -> bool:
+    """Detect vague instruction patterns that should fall back to defaults."""
+    lowered = str(text or "").lower()
+    if not lowered:
+        return True
+    for phrase in AMBIGUOUS_INSTRUCTION_PHRASES:
+        if phrase in lowered and not _has_actionable_instruction_detail(lowered):
+            return True
+    return False
+
+
+def _remove_conflicting_cadence_hints(text: str, blocked_hints: Tuple[str, ...]) -> str:
+    """Remove conflicting cadence words/phrases from instruction text."""
+    cleaned = str(text or "")
+    for hint in blocked_hints:
+        cleaned = re.sub(re.escape(hint), " ", cleaned, flags=re.IGNORECASE)
+    return _clean_instruction_text(cleaned)
 
 
 def _split_long_tts_sentence(sentence: str, max_chars: int) -> List[str]:
@@ -424,26 +464,140 @@ class TTSSynthesizer:
             fallback=self.config.tts_speed_default,
         )
 
-    def _refine_instructions_for_phase(self, *, instructions: str, role: str, phase: str) -> str:
-        """Merge phase style defaults with line-level instruction overrides."""
+    def _resolve_segment_speed(
+        self,
+        *,
+        phase: str,
+        pace_hint: str,
+        previous_speed: Optional[float],
+    ) -> Dict[str, Any]:
+        """Resolve deterministic effective speed with optional hint smoothing."""
+        raw_hint = str(pace_hint or "").strip().lower()
+        normalized_hint = _normalize_pace_hint(raw_hint)
+        hint_invalid = bool(raw_hint) and not normalized_hint
+        hint_applied = False
+        delta_clamped = False
+        fallback_1x = False
+        resume_seed_missing = False
+        try:
+            phase_speed = self._speed_for_phase(phase)
+            hinted_speed = phase_speed
+            if self.config.tts_speed_hints_enabled and normalized_hint:
+                hinted_speed = phase_speed * float(PACE_HINT_MULTIPLIERS.get(normalized_hint, 1.0))
+                hint_applied = True
+            hinted_speed = _clamp_tts_speed(hinted_speed, fallback=1.0)
+
+            effective_speed = hinted_speed
+            if self.config.tts_speed_hints_enabled and previous_speed is not None:
+                prev = _clamp_tts_speed(previous_speed, fallback=1.0)
+                max_delta = max(0.0, min(1.0, float(self.config.tts_speed_hints_max_delta)))
+                low = max(0.25, prev - max_delta)
+                high = min(4.0, prev + max_delta)
+                effective_speed = round(max(low, min(high, hinted_speed)), 3)
+                delta_clamped = abs(float(effective_speed) - float(hinted_speed)) > 1e-9
+
+            return {
+                "effective_speed": _clamp_tts_speed(effective_speed, fallback=1.0),
+                "pace_hint": normalized_hint,
+                "pace_hint_applied": hint_applied,
+                "pace_hint_invalid": hint_invalid,
+                "speed_hint_delta_clamped": delta_clamped,
+                "speed_hint_fallback_1x": fallback_1x,
+                "speed_hint_resume_seed_missing": resume_seed_missing,
+            }
+        except Exception as exc:  # noqa: BLE001
+            fallback_1x = True
+            self.logger.warn(
+                "speed_hint_resolution_fallback_1x",
+                phase=_normalize_phase(phase),
+                pace_hint=raw_hint,
+                error=str(exc),
+            )
+            return {
+                "effective_speed": 1.0,
+                "pace_hint": normalized_hint,
+                "pace_hint_applied": False,
+                "pace_hint_invalid": hint_invalid,
+                "speed_hint_delta_clamped": False,
+                "speed_hint_fallback_1x": fallback_1x,
+                "speed_hint_resume_seed_missing": False,
+            }
+
+    def _refine_instructions_for_phase(
+        self,
+        *,
+        instructions: str,
+        role: str,
+        phase: str,
+        speed: float,
+        pace_hint: str = "",
+    ) -> str:
+        """Resolve final TTS instructions with phase/speed-safe guardrails."""
         normalized_phase = _normalize_phase(phase)
-        parsed_fields, extras = _parse_instruction_fields(instructions)
-        if not parsed_fields:
-            extras = []
-        merged = _default_instruction_fields(role)
-        merged.update(PHASE_STYLE_OVERRIDES.get(normalized_phase, PHASE_STYLE_OVERRIDES[PHASE_BODY]))
-        # Preserve explicit per-line guidance when it is already structured.
-        merged.update(parsed_fields)
-        rendered = _render_instruction_fields(merged, extras)
-        if rendered:
-            return rendered
-        return DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
+        cleaned = _clean_instruction_text(instructions)
+        fallback = _default_instructions_for_role(role)
+        if not cleaned:
+            cleaned = fallback
+        if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+            cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+        if _instruction_sentence_count(cleaned) > 2:
+            cleaned = fallback
+        if _looks_ambiguous_instruction(cleaned) or not _has_actionable_instruction_detail(cleaned):
+            cleaned = fallback
+
+        normalized_hint = _normalize_pace_hint(pace_hint)
+        speed_value = _clamp_tts_speed(speed, fallback=self.config.tts_speed_default)
+        lower = cleaned.lower()
+        if self.config.tts_speed_hints_enabled and normalized_hint == "brisk" and any(
+            token in lower for token in SLOW_CADENCE_HINTS
+        ):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, SLOW_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = f"{cleaned} Keep delivery brisk, clear, and energetic without sounding rushed."
+            lower = cleaned.lower()
+        elif self.config.tts_speed_hints_enabled and normalized_hint == "calm" and any(
+            token in lower for token in FAST_CADENCE_HINTS
+        ):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, FAST_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = f"{cleaned} Keep delivery calm, steady, and clear."
+            lower = cleaned.lower()
+        if speed_value >= 1.1 and any(token in lower for token in SLOW_CADENCE_HINTS):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, SLOW_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = (
+                f"{cleaned} Keep delivery clear and moderately brisk without sounding rushed."
+            )
+        elif speed_value <= 0.95 and any(token in lower for token in FAST_CADENCE_HINTS):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, FAST_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = f"{cleaned} Keep delivery calm and steady with clear articulation."
+
+        overlay = PHASE_INSTRUCTION_OVERLAYS.get(normalized_phase, PHASE_INSTRUCTION_OVERLAYS[PHASE_BODY])
+        if overlay.lower() not in cleaned.lower():
+            cleaned = f"{cleaned} {overlay}"
+        cleaned = _clean_instruction_text(cleaned)
+        if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+            cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+        if not cleaned:
+            return _clean_instruction_text(f"{fallback} {overlay}")
+        return cleaned
 
     def _phase_speed_metrics(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Compute phase and speed statistics from manifest segments."""
         phase_counts: Dict[str, int] = {PHASE_INTRO: 0, PHASE_BODY: 0, PHASE_CLOSING: 0}
         phase_speeds: Dict[str, List[float]] = {PHASE_INTRO: [], PHASE_BODY: [], PHASE_CLOSING: []}
         all_speeds: List[float] = []
+        pace_hint_counts: Dict[str, int] = {"calm": 0, "steady": 0, "brisk": 0, "none": 0}
+        pace_hint_applied_count = 0
+        speed_hint_delta_clamped_count = 0
+        speed_hint_invalid_count = 0
+        speed_hint_fallback_1x_count = 0
+        speed_hint_resume_seed_missing_count = 0
         for seg in segments:
             phase = _normalize_phase(str(seg.get("phase", "")))
             fallback_speed = self._speed_for_phase(phase)
@@ -451,6 +605,19 @@ class TTSSynthesizer:
             phase_counts[phase] = int(phase_counts.get(phase, 0)) + 1
             phase_speeds.setdefault(phase, []).append(speed)
             all_speeds.append(speed)
+            hint = _normalize_pace_hint(seg.get("pace_hint"))
+            pace_hint_key = hint if hint else "none"
+            pace_hint_counts[pace_hint_key] = int(pace_hint_counts.get(pace_hint_key, 0)) + 1
+            if bool(seg.get("pace_hint_applied", False)):
+                pace_hint_applied_count += 1
+            if bool(seg.get("speed_hint_delta_clamped", False)):
+                speed_hint_delta_clamped_count += 1
+            if bool(seg.get("pace_hint_invalid", False)):
+                speed_hint_invalid_count += 1
+            if bool(seg.get("speed_hint_fallback_1x", False)):
+                speed_hint_fallback_1x_count += 1
+            if bool(seg.get("speed_hint_resume_seed_missing", False)):
+                speed_hint_resume_seed_missing_count += 1
 
         def _stats(values: List[float]) -> Dict[str, float]:
             if not values:
@@ -469,6 +636,15 @@ class TTSSynthesizer:
                 for phase, values in phase_speeds.items()
                 if values
             },
+            "pace_hint_counts": pace_hint_counts,
+            "pace_hint_applied_ratio": round(
+                float(pace_hint_applied_count) / float(max(1, len(segments))),
+                4,
+            ),
+            "speed_hint_delta_clamped_count": speed_hint_delta_clamped_count,
+            "speed_hint_invalid_count": speed_hint_invalid_count,
+            "speed_hint_fallback_1x_count": speed_hint_fallback_1x_count,
+            "speed_hint_resume_seed_missing_count": speed_hint_resume_seed_missing_count,
         }
 
     def _apply_phase_metrics_to_manifest(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -477,6 +653,14 @@ class TTSSynthesizer:
         manifest["tts_phase_counts"] = metrics["phase_counts"]
         manifest["tts_speed_stats"] = metrics["speed_stats"]
         manifest["tts_phase_speed_stats"] = metrics["phase_speed_stats"]
+        manifest["tts_pace_hint_counts"] = metrics["pace_hint_counts"]
+        manifest["tts_pace_hint_applied_ratio"] = metrics["pace_hint_applied_ratio"]
+        manifest["tts_speed_hint_delta_clamped_count"] = metrics["speed_hint_delta_clamped_count"]
+        manifest["tts_speed_hint_invalid_count"] = metrics["speed_hint_invalid_count"]
+        manifest["tts_speed_hint_fallback_1x_count"] = metrics["speed_hint_fallback_1x_count"]
+        manifest["tts_speed_hint_resume_seed_missing_count"] = metrics[
+            "speed_hint_resume_seed_missing_count"
+        ]
         return metrics
 
     def _build_segments(self, lines: List[Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -493,11 +677,13 @@ class TTSSynthesizer:
                 total_valid_lines += 1
         idx = 0
         valid_line_position = 0
+        previous_effective_speed: Optional[float] = None
         for line_idx, line in enumerate(lines, start=1):
             speaker = str(line.get("speaker", "")).strip()
             role = str(line.get("role", "")).strip()
             text = str(line.get("text", "")).strip()
             instructions = str(line.get("instructions", "")).strip()
+            raw_pace_hint = str(line.get("pace_hint", "")).strip()
             if not speaker or not text:
                 continue
             valid_line_position += 1
@@ -505,13 +691,21 @@ class TTSSynthesizer:
                 line_index=valid_line_position,
                 total_lines=total_valid_lines,
             )
+            speed_resolution = self._resolve_segment_speed(
+                phase=phase,
+                pace_hint=raw_pace_hint,
+                previous_speed=previous_effective_speed,
+            )
+            speed = float(speed_resolution["effective_speed"])
+            pace_hint = str(speed_resolution.get("pace_hint", "") or "")
             instructions = self._refine_instructions_for_phase(
                 instructions=instructions,
                 role=role,
                 phase=phase,
+                speed=speed,
+                pace_hint=pace_hint,
             )
             voice = voice_for(role or speaker, speaker_name=speaker, role_speakers=role_speakers)
-            speed = self._speed_for_phase(phase)
             parts = split_text_for_tts(text, self.config.tts_max_chars_per_segment)
             for part in parts:
                 idx += 1
@@ -531,8 +725,20 @@ class TTSSynthesizer:
                         "role": role,
                         "voice": voice,
                         "instructions": instructions,
+                        "pace_hint": pace_hint,
+                        "pace_hint_applied": bool(speed_resolution.get("pace_hint_applied", False)),
+                        "pace_hint_invalid": bool(speed_resolution.get("pace_hint_invalid", False)),
                         "phase": phase,
                         "speed": speed,
+                        "speed_hint_delta_clamped": bool(
+                            speed_resolution.get("speed_hint_delta_clamped", False)
+                        ),
+                        "speed_hint_fallback_1x": bool(
+                            speed_resolution.get("speed_hint_fallback_1x", False)
+                        ),
+                        "speed_hint_resume_seed_missing": bool(
+                            speed_resolution.get("speed_hint_resume_seed_missing", False)
+                        ),
                         "text": part,
                         "text_len": len(part),
                         "status": "pending",
@@ -542,6 +748,7 @@ class TTSSynthesizer:
                         "file_name": f"seg_{segment_id}.mp3",
                     }
                 )
+                previous_effective_speed = speed
         if not segments:
             raise RuntimeError("No valid lines found for TTS synthesis")
         return segments
@@ -596,7 +803,15 @@ class TTSSynthesizer:
                     "error": seg.get("error", ""),
                     "error_kind": seg.get("error_kind", ""),
                     "phase": _normalize_phase(str(seg.get("phase", ""))),
+                    "pace_hint": _normalize_pace_hint(seg.get("pace_hint")),
+                    "pace_hint_applied": bool(seg.get("pace_hint_applied", False)),
+                    "pace_hint_invalid": bool(seg.get("pace_hint_invalid", False)),
                     "speed": _clamp_tts_speed(seg.get("speed"), fallback=self.config.tts_speed_default),
+                    "speed_hint_delta_clamped": bool(seg.get("speed_hint_delta_clamped", False)),
+                    "speed_hint_fallback_1x": bool(seg.get("speed_hint_fallback_1x", False)),
+                    "speed_hint_resume_seed_missing": bool(
+                        seg.get("speed_hint_resume_seed_missing", False)
+                    ),
                     "checksum_sha256": seg.get("checksum_sha256", ""),
                 }
             )
@@ -623,6 +838,7 @@ class TTSSynthesizer:
         changed = False
         segments = [seg for seg in manifest.get("segments", []) if isinstance(seg, dict)]
         total_segments = max(1, len(segments))
+        previous_effective_speed: Optional[float] = None
         for ordinal, seg in enumerate(segments, start=1):
             if "line_index" not in seg:
                 seg["line_index"] = int(seg.get("index", 0) or 0)
@@ -651,11 +867,65 @@ class TTSSynthesizer:
                 seg["phase"] = normalized_phase
                 changed = True
             current_phase = _normalize_phase(str(seg.get("phase", PHASE_BODY)))
-            expected_speed = self._speed_for_phase(current_phase)
-            current_speed = _clamp_tts_speed(seg.get("speed"), fallback=expected_speed)
-            if not isinstance(seg.get("speed"), (int, float)) or abs(float(current_speed) - float(seg.get("speed", 0.0))) > 1e-9:
-                seg["speed"] = current_speed
+            raw_hint = str(seg.get("pace_hint", "")).strip()
+            normalized_hint = _normalize_pace_hint(raw_hint)
+            if normalized_hint:
+                if seg.get("pace_hint") != normalized_hint:
+                    seg["pace_hint"] = normalized_hint
+                    changed = True
+            elif raw_hint:
+                seg["pace_hint"] = ""
                 changed = True
+            pace_hint_invalid = bool(raw_hint) and not normalized_hint
+
+            raw_speed = seg.get("speed")
+            speed_valid = isinstance(raw_speed, (int, float)) and math.isfinite(float(raw_speed))
+            if speed_valid:
+                expected_speed = self._speed_for_phase(current_phase)
+                current_speed = _clamp_tts_speed(raw_speed, fallback=expected_speed)
+                if abs(float(current_speed) - float(raw_speed)) > 1e-9:
+                    seg["speed"] = current_speed
+                    changed = True
+                if bool(seg.get("pace_hint_invalid", False)) != pace_hint_invalid:
+                    seg["pace_hint_invalid"] = pace_hint_invalid
+                    changed = True
+            else:
+                resolution = self._resolve_segment_speed(
+                    phase=current_phase,
+                    pace_hint=normalized_hint,
+                    previous_speed=previous_effective_speed,
+                )
+                seg["speed"] = float(resolution["effective_speed"])
+                seg["pace_hint_applied"] = bool(resolution.get("pace_hint_applied", False))
+                seg["pace_hint_invalid"] = bool(
+                    resolution.get("pace_hint_invalid", False) or pace_hint_invalid
+                )
+                seg["speed_hint_delta_clamped"] = bool(
+                    resolution.get("speed_hint_delta_clamped", False)
+                )
+                seg["speed_hint_fallback_1x"] = bool(resolution.get("speed_hint_fallback_1x", False))
+                seg["speed_hint_resume_seed_missing"] = bool(
+                    self.config.tts_speed_hints_enabled and previous_effective_speed is None
+                )
+                changed = True
+
+            if "pace_hint_applied" not in seg:
+                seg["pace_hint_applied"] = False
+                changed = True
+            if "pace_hint_invalid" not in seg:
+                seg["pace_hint_invalid"] = pace_hint_invalid
+                changed = True
+            if "speed_hint_delta_clamped" not in seg:
+                seg["speed_hint_delta_clamped"] = False
+                changed = True
+            if "speed_hint_fallback_1x" not in seg:
+                seg["speed_hint_fallback_1x"] = False
+                changed = True
+            if "speed_hint_resume_seed_missing" not in seg:
+                seg["speed_hint_resume_seed_missing"] = False
+                changed = True
+
+            previous_effective_speed = _clamp_tts_speed(seg.get("speed"), fallback=1.0)
         return changed
 
     def _pending_groups(self, manifest: Dict[str, Any]) -> List[Tuple[int, List[int]]]:
@@ -1117,6 +1387,11 @@ class TTSSynthesizer:
                                         ),
                                         segment_id=seg["segment_id"],
                                         phase=_normalize_phase(str(seg.get("phase", ""))),
+                                        pace_hint=_normalize_pace_hint(seg.get("pace_hint")),
+                                        pace_hint_applied=bool(seg.get("pace_hint_applied", False)),
+                                        speed_hint_delta_clamped=bool(
+                                            seg.get("speed_hint_delta_clamped", False)
+                                        ),
                                         speed=_clamp_tts_speed(
                                             seg.get("speed"),
                                             fallback=self.config.tts_speed_default,
@@ -1197,6 +1472,14 @@ class TTSSynthesizer:
                 "tts_phase_counts": phase_metrics["phase_counts"],
                 "tts_speed_stats": phase_metrics["speed_stats"],
                 "tts_phase_speed_stats": phase_metrics["phase_speed_stats"],
+                "pace_hint_counts": phase_metrics["pace_hint_counts"],
+                "pace_hint_applied_ratio": phase_metrics["pace_hint_applied_ratio"],
+                "speed_delta_clamped_count": phase_metrics["speed_hint_delta_clamped_count"],
+                "speed_hint_invalid_count": phase_metrics["speed_hint_invalid_count"],
+                "speed_hint_fallback_1x_count": phase_metrics["speed_hint_fallback_1x_count"],
+                "speed_hint_resume_seed_missing_count": phase_metrics[
+                    "speed_hint_resume_seed_missing_count"
+                ],
             }
             if failed_segments:
                 # Aggregate failure kinds keeps orchestrator policy simple and

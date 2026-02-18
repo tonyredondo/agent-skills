@@ -812,6 +812,7 @@ def ensure_tail_questions_answered(
             role=answer_role,
             fallback=fallback_instructions,
         ),
+        "pace_hint": str(summary_line.get("pace_hint") or "").strip(),
         "text": answer_text,
     }
     out.insert(summary_idx, answer_line)
@@ -842,6 +843,7 @@ def ensure_recap_near_end(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
         "speaker": speaker,
         "role": role,
         "instructions": out[-1].get("instructions", ""),
+        "pace_hint": out[-1].get("pace_hint", ""),
         "text": _build_contextual_recap_text(out, language_hint=resolved_lang),
     }
     if _is_farewell(str(out[-1].get("text") or "")):
@@ -869,6 +871,7 @@ def ensure_farewell_close(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
                 "speaker": last.get("speaker", "Host1"),
                 "role": last.get("role", "Host1"),
                 "instructions": last.get("instructions", ""),
+                "pace_hint": last.get("pace_hint", ""),
                 "text": FAREWELL_BY_LANG.get(resolved_lang, FAREWELL_BY_LANG["es"]),
             }
         )
@@ -879,6 +882,7 @@ def ensure_farewell_close(lines: List[Dict[str, str]]) -> List[Dict[str, str]]:
             "speaker": last.get("speaker", "Host1"),
             "role": last.get("role", "Host1"),
             "instructions": last.get("instructions", ""),
+            "pace_hint": last.get("pace_hint", ""),
             "text": FAREWELL_BY_LANG.get(resolved_lang, FAREWELL_BY_LANG["es"]),
         }
     )

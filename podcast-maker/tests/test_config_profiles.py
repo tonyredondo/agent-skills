@@ -68,6 +68,8 @@ class ConfigProfilesTests(unittest.TestCase):
         self.assertEqual(cfg.tts_speed_closing, 1.0)
         self.assertEqual(cfg.tts_phase_intro_ratio, 0.15)
         self.assertEqual(cfg.tts_phase_closing_ratio, 0.15)
+        self.assertTrue(cfg.tts_speed_hints_enabled)
+        self.assertEqual(cfg.tts_speed_hints_max_delta, 0.08)
 
     def test_audio_config_speed_invalid_values_fallback_to_default_and_clamp(self) -> None:
         with mock.patch.dict(
@@ -79,6 +81,8 @@ class ConfigProfilesTests(unittest.TestCase):
                 "TTS_SPEED_CLOSING": "9.7",
                 "TTS_PHASE_INTRO_RATIO": "-2.0",
                 "TTS_PHASE_CLOSING_RATIO": "1.2",
+                "TTS_SPEED_HINTS_ENABLED": "yes",
+                "TTS_SPEED_HINTS_MAX_DELTA": "2.4",
             },
             clear=False,
         ):
@@ -89,6 +93,8 @@ class ConfigProfilesTests(unittest.TestCase):
         self.assertEqual(cfg.tts_speed_closing, 4.0)
         self.assertEqual(cfg.tts_phase_intro_ratio, 0.0)
         self.assertEqual(cfg.tts_phase_closing_ratio, 0.45)
+        self.assertTrue(cfg.tts_speed_hints_enabled)
+        self.assertEqual(cfg.tts_speed_hints_max_delta, 1.0)
 
     def test_reliability_config_clamps_minimum_values(self) -> None:
         with mock.patch.dict(
@@ -123,6 +129,20 @@ class ConfigProfilesTests(unittest.TestCase):
         fp1 = config_fingerprint(script_cfg=script_cfg, extra={"v": 1})
         fp2 = config_fingerprint(script_cfg=script_cfg, extra={"v": 2})
         self.assertNotEqual(fp1, fp2)
+
+    def test_config_fingerprint_ignores_speed_hint_runtime_toggles(self) -> None:
+        base = AudioConfig.from_env(profile_name="short")
+        variant = AudioConfig.from_env(profile_name="short")
+        with mock.patch.dict(
+            os.environ,
+            {"TTS_SPEED_HINTS_ENABLED": "0", "TTS_SPEED_HINTS_MAX_DELTA": "0.33"},
+            clear=False,
+        ):
+            variant = AudioConfig.from_env(profile_name="short")
+        self.assertNotEqual(base.tts_speed_hints_enabled, variant.tts_speed_hints_enabled)
+        fp1 = config_fingerprint(audio_cfg=base, extra={"component": "tts_synthesizer"})
+        fp2 = config_fingerprint(audio_cfg=variant, extra={"component": "tts_synthesizer"})
+        self.assertEqual(fp1, fp2)
 
 
 if __name__ == "__main__":
