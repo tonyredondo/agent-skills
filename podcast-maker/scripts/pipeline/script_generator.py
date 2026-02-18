@@ -216,8 +216,8 @@ class ScriptGenerator:
             - Keep spoken text in the same language/tone as recent context (Spanish by default).
             - Keep role values Host1/Host2 and strict alternation.
             - Keep instructions in English as short natural-language guidance (1-2 sentences).
-            - Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Avoid generic filler and prefab lines; every line must be contextual and specific to this episode.
             - Preserve factual consistency with source context.
             - Do not invent names, dates, numbers, or tools absent from source/context.
@@ -322,8 +322,8 @@ class ScriptGenerator:
 
             Constraints:
             - Keep spoken text in the script language and instructions in English as short natural-language guidance (1-2 sentences).
-            - Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Keep Host1/Host2 alternation and consistent speakers.
             - Preserve source-grounded facts and avoid fabricated details.
             - Keep each line concise (1-2 sentences).
@@ -893,8 +893,8 @@ class ScriptGenerator:
             - Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             - Spoken text must be in Spanish.
             - instructions MUST be in English as short natural-language guidance (1-2 sentences).
-            - Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Keep instructions consistent per speaker and avoid contradictory speed cues.
             - Good examples:
               "Speak in a warm, confident, conversational Spanish tone. Keep pacing measured and clear with brief pauses."
@@ -1024,7 +1024,6 @@ class ScriptGenerator:
             Repair this JSON object so it strictly follows the schema with key "lines".
             Each line must contain: speaker, role, instructions, text.
             Keep instructions in English as short natural-language guidance (1-2 sentences).
-            Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             Keep semantics and wording as much as possible.
             Output ONLY JSON.
 
@@ -1832,8 +1831,8 @@ class ScriptGenerator:
             Do not repeat prior lines.
             Expand with clarifying examples and useful Q&A.
             Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
-            Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
             Do not expose source-availability caveats or editorial process disclaimers in spoken text (for example: "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
@@ -1897,8 +1896,8 @@ class ScriptGenerator:
             Continue and safely complete this Spanish podcast script without rewriting previous lines.
             Return ONLY JSON with key "lines" and fields: speaker, role, instructions, text.
             Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
-            Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
             Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Fix abrupt/incomplete ending and provide a coherent closing flow.
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
@@ -2281,53 +2280,21 @@ class ScriptGenerator:
             lines: List[Dict[str, str]] = []
             if raw_lines:
                 try:
-                    lines = validate_script_payload(
-                        {"lines": raw_lines},
-                        reject_legacy_instructions=True,
-                    )["lines"]
-                except Exception as exc:
+                    lines = validate_script_payload({"lines": raw_lines})["lines"]
+                except Exception:
                     migrated_lines = _migrate_checkpoint_lines(raw_lines)
-                    if migrated_lines:
-                        try:
-                            lines = validate_script_payload(
-                                {"lines": migrated_lines},
-                                reject_legacy_instructions=True,
-                            )["lines"]
-                            state["lines"] = lines
-                            state["current_word_count"] = count_words_from_lines(lines)
-                            state["last_success_at"] = int(time.time())
-                            store.save(state)
-                            self.logger.warn(
-                                "resume_lines_migrated",
-                                previous_lines=len(raw_lines) if isinstance(raw_lines, list) else 0,
-                                migrated_lines=len(lines),
-                            )
-                        except Exception as migrated_exc:
-                            message = str(migrated_exc).lower()
-                            if "deprecated legacy format" not in message:
-                                raise
-                            state["lines"] = []
-                            state["current_word_count"] = 0
-                            state["last_success_at"] = int(time.time())
-                            store.save(state)
-                            lines = []
-                            self.logger.warn(
-                                "resume_lines_legacy_discarded",
-                                previous_lines=len(raw_lines) if isinstance(raw_lines, list) else 0,
-                            )
-                    else:
-                        message = str(exc).lower()
-                        if "deprecated legacy format" not in message:
-                            raise
-                        state["lines"] = []
-                        state["current_word_count"] = 0
-                        state["last_success_at"] = int(time.time())
-                        store.save(state)
-                        lines = []
-                        self.logger.warn(
-                            "resume_lines_legacy_discarded",
-                            previous_lines=len(raw_lines) if isinstance(raw_lines, list) else 0,
-                        )
+                    if not migrated_lines:
+                        raise
+                    lines = validate_script_payload({"lines": migrated_lines})["lines"]
+                    state["lines"] = lines
+                    state["current_word_count"] = count_words_from_lines(lines)
+                    state["last_success_at"] = int(time.time())
+                    store.save(state)
+                    self.logger.warn(
+                        "resume_lines_migrated",
+                        previous_lines=len(raw_lines) if isinstance(raw_lines, list) else 0,
+                        migrated_lines=len(lines),
+                    )
             lines = fix_mid_farewells(lines)
             pre_summary_started = time.time()
             self._last_stage = "pre_summary"

@@ -17,14 +17,6 @@ DEFAULT_HOST2_INSTRUCTIONS = (
 )
 DEFAULT_INSTRUCTIONS = DEFAULT_HOST1_INSTRUCTIONS
 MAX_INSTRUCTIONS_CHARS = 220
-LEGACY_INSTRUCTION_MARKERS = (
-    "voice affect:",
-    "tone:",
-    "pacing:",
-    "emotion:",
-    "pronunciation:",
-    "pauses:",
-)
 AMBIGUOUS_INSTRUCTION_PHRASES = (
     "speak naturally",
     "do your best",
@@ -94,19 +86,6 @@ def _normalize_instruction_whitespace(value: str) -> str:
     return " ".join(str(value or "").strip().split())
 
 
-def _legacy_instruction_reason(instructions: str) -> str:
-    """Return reason if instruction appears to use deprecated legacy template."""
-    lowered = str(instructions or "").strip().lower()
-    if not lowered:
-        return ""
-    if "|" in lowered:
-        return "contains legacy field separator '|'"
-    for marker in LEGACY_INSTRUCTION_MARKERS:
-        if marker in lowered:
-            return f"contains legacy marker '{marker}'"
-    return ""
-
-
 def _sentence_count(text: str) -> int:
     """Count coarse sentence boundaries using simple punctuation checks."""
     count = 0
@@ -143,21 +122,10 @@ def _normalize_instructions_for_line(
     *,
     instructions: str,
     role: str,
-    idx: int,
-    reject_legacy_instructions: bool = False,
 ) -> str:
     """Normalize instruction string and enforce hard-cut contract semantics."""
     cleaned = _normalize_instruction_whitespace(instructions)
     if not cleaned:
-        return _default_instructions_for_role(role)
-
-    legacy_reason = _legacy_instruction_reason(cleaned)
-    if legacy_reason:
-        if reject_legacy_instructions:
-            raise ValueError(
-                f"line[{idx}] instructions use deprecated legacy format ({legacy_reason}); "
-                "regenerate script artifacts with OpenAI-style instructions"
-            )
         return _default_instructions_for_role(role)
 
     if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
@@ -178,8 +146,6 @@ def _normalize_instructions_for_line(
 def normalize_line(
     raw: Dict[str, Any],
     idx: int,
-    *,
-    reject_legacy_instructions: bool = False,
 ) -> Dict[str, str]:
     """Normalize one dialogue line into canonical schema fields."""
     speaker = str(raw.get("speaker", "")).strip()
@@ -197,8 +163,6 @@ def normalize_line(
     instructions = _normalize_instructions_for_line(
         instructions=instructions,
         role=role,
-        idx=idx,
-        reject_legacy_instructions=reject_legacy_instructions,
     )
     return {
         "speaker": speaker,
@@ -210,8 +174,6 @@ def normalize_line(
 
 def validate_script_payload(
     payload: Dict[str, Any],
-    *,
-    reject_legacy_instructions: bool = False,
 ) -> Dict[str, List[Dict[str, str]]]:
     """Validate/normalize payload and ensure non-empty `lines` list."""
     lines = payload.get("lines", [])
@@ -225,7 +187,6 @@ def validate_script_payload(
             normalize_line(
                 item,
                 idx,
-                reject_legacy_instructions=reject_legacy_instructions,
             )
         )
     if not out:
@@ -298,8 +259,6 @@ def _extract_candidate_lines(payload: Dict[str, Any]) -> List[Any]:
 
 def salvage_script_payload(
     payload: Dict[str, Any],
-    *,
-    reject_legacy_instructions: bool = False,
 ) -> Dict[str, List[Dict[str, str]]]:
     """Best-effort salvage of malformed payload into canonical `lines`."""
     if not isinstance(payload, dict):
@@ -356,8 +315,6 @@ def salvage_script_payload(
         instructions = _normalize_instructions_for_line(
             instructions=instructions,
             role=role,
-            idx=idx,
-            reject_legacy_instructions=reject_legacy_instructions,
         )
         normalized = {
             "speaker": speaker,

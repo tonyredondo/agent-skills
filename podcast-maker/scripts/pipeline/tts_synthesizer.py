@@ -59,14 +59,6 @@ PHASE_INSTRUCTION_OVERLAYS: Dict[str, str] = {
     PHASE_BODY: "Keep an analytical, steady delivery focused on clarity.",
     PHASE_CLOSING: "Use a warm, appreciative cadence for the closing summary and farewell.",
 }
-LEGACY_INSTRUCTION_MARKERS = (
-    "voice affect:",
-    "tone:",
-    "pacing:",
-    "emotion:",
-    "pronunciation:",
-    "pauses:",
-)
 ACTIONABLE_INSTRUCTION_HINTS = (
     "tone",
     "pacing",
@@ -143,19 +135,6 @@ def _default_instructions_for_role(role: str) -> str:
 def _clean_instruction_text(value: str) -> str:
     """Normalize instruction whitespace into a single compact line."""
     return " ".join(str(value or "").strip().split())
-
-
-def _instruction_legacy_reason(instructions: str) -> str:
-    """Return reason if instruction text looks like deprecated legacy template."""
-    lowered = str(instructions or "").strip().lower()
-    if not lowered:
-        return ""
-    if "|" in lowered:
-        return "contains legacy field separator"
-    for marker in LEGACY_INSTRUCTION_MARKERS:
-        if marker in lowered:
-            return f"contains legacy marker '{marker}'"
-    return ""
 
 
 def _instruction_sentence_count(text: str) -> int:
@@ -484,9 +463,6 @@ class TTSSynthesizer:
         cleaned = _clean_instruction_text(instructions)
         fallback = _default_instructions_for_role(role)
         if not cleaned:
-            cleaned = fallback
-        legacy_reason = _instruction_legacy_reason(cleaned)
-        if legacy_reason:
             cleaned = fallback
         if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
             cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()

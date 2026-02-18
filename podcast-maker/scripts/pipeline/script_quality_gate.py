@@ -1227,8 +1227,8 @@ def _build_repair_prompt(
         - role must be Host1 or Host2.
         - Keep spoken text in Spanish.
         - Keep instructions in English as short natural-language guidance (1-2 sentences).
-        - Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
         - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+        - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
         - Preserve conversation flow and avoid generic filler.
         - Do not include internal workflow/tooling disclosures in spoken text (for example script paths, shell commands, DailyRead pipeline notes, Tavily, Serper).
         - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").
@@ -1335,8 +1335,8 @@ def _build_open_question_tail_repair_prompt(
 
         Constraints:
         - Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
-        - Do NOT use legacy field templates or separators (no "Voice Affect: ... | Tone: ...").
         - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+        - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
         - Keep role values Host1/Host2 and maintain strict alternation.
         - Preserve facts and avoid inventing names, dates, numbers, or tools not present in source/context.
         - Do not include source-availability caveats or editorial process disclaimers in spoken text (for example "en el material que tenemos hoy", "sin inventar especificaciones", "no tenemos ese dato aqui", "con lo que tenemos").

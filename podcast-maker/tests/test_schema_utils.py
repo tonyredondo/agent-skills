@@ -40,18 +40,17 @@ class SchemaUtilsTests(unittest.TestCase):
         self.assertNotIn("\n", line["instructions"])
         self.assertNotIn("|", line["instructions"])
 
-    def test_normalize_line_rejects_legacy_instruction_template(self) -> None:
-        with self.assertRaises(ValueError):
-            normalize_line(
-                {
-                    "speaker": "Ana",
-                    "role": "Host1",
-                    "instructions": "Voice Affect: Warm | Tone: Conversational",
-                    "text": "hola",
-                },
-                0,
-                reject_legacy_instructions=True,
-            )
+    def test_normalize_line_preserves_structured_instruction_template(self) -> None:
+        line = normalize_line(
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Voice Affect: Warm | Tone: Conversational",
+                "text": "hola",
+            },
+            0,
+        )
+        self.assertIn("Voice Affect: Warm", line["instructions"])
 
     def test_normalize_line_falls_back_when_instruction_is_ambiguous(self) -> None:
         line = normalize_line(

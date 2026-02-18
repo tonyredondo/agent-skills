@@ -425,22 +425,13 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.script_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         try:
-            validated = validate_script_payload(payload, reject_legacy_instructions=True)
+            validated = validate_script_payload(payload)
         except ValueError as exc:
             message = str(exc)
-            if "deprecated legacy format" in message.lower():
-                logger.warn(
-                    "legacy_script_instructions_detected_regenerating",
-                    script_path=args.script_path,
-                )
-                # Regenerate normalized instructions from the provided source
-                # payload instead of processing legacy template strings.
-                validated = validate_script_payload(payload)
-            else:
-                raise ScriptOperationError(
-                    f"Script schema validation failed before audio stage: {message}",
-                    error_kind=ERROR_KIND_INVALID_SCHEMA,
-                ) from exc
+            raise ScriptOperationError(
+                f"Script schema validation failed before audio stage: {message}",
+                error_kind=ERROR_KIND_INVALID_SCHEMA,
+            ) from exc
         hardened_lines = harden_script_structure(
             list(validated.get("lines", [])),
             max_consecutive_same_speaker=quality_cfg.max_consecutive_same_speaker,

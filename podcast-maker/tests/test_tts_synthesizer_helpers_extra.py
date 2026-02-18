@@ -117,7 +117,7 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         self.assertIn("For this intro segment", segments[0]["instructions"])
         self.assertNotIn(" x ", f" {segments[0]['instructions']} ")
 
-    def test_build_segments_replaces_legacy_structured_instruction_format(self) -> None:
+    def test_build_segments_keeps_structured_instruction_when_provided(self) -> None:
         lines = [
             {
                 "speaker": "Ana",
@@ -131,9 +131,9 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         ]
         segments = self.synth._build_segments(lines)
         instructions = segments[0]["instructions"]
-        self.assertNotIn("Tone: Formal y pausado", instructions)
-        self.assertNotIn("|", instructions)
-        self.assertIn("Speak in a warm, confident, conversational tone.", instructions)
+        self.assertIn("Tone: Formal y pausado", instructions)
+        self.assertIn("|", instructions)
+        self.assertIn("Keep an analytical, steady delivery focused on clarity.", instructions)
 
     def test_build_segments_guarantees_intro_and_closing_for_short_valid_scripts(self) -> None:
         lines = [
