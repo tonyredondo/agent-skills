@@ -67,7 +67,7 @@ If this file and code diverge, code is the source of truth and this file must be
 | `SCRIPT_SOURCE_VALIDATION_ENFORCE_RATIO` | profile policy | Default enforce threshold |
 | `SCRIPT_PRESUMMARY_PARALLEL` | `0` | Parallel pre-summary |
 | `SCRIPT_PRESUMMARY_PARALLEL_WORKERS` | `2` | Clamped `1..4` |
-| `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` | `0.75` | Prevents max-word early-stop when multi-topic coverage is still narrow |
+| `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` | `0.85` | Prevents max-word early-stop when multi-topic coverage is still narrow |
 
 Profile source-validation defaults:
 

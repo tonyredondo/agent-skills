@@ -26,7 +26,10 @@ def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    normalized = str(raw).strip().lower()
+    if normalized == "":
+        return default
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _env_int(name: str, default: int) -> int:

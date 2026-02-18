@@ -203,6 +203,71 @@ class IntegrationRawOnlyFallbackTests(unittest.TestCase):
             self.assertIn("tts", phase_seconds)
             self.assertIn("mix", phase_seconds)
 
+    def test_main_raw_only_rejects_non_mp3_segments_without_ffmpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "script_non_mp3.json")
+            outdir = os.path.join(tmp, "out")
+            os.makedirs(outdir, exist_ok=True)
+            payload = {
+                "lines": [
+                    {
+                        "speaker": "Carlos",
+                        "role": "Host1",
+                        "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+                        "text": "Hola mundo.",
+                    }
+                ]
+            }
+            with open(script_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            ckpt_dir = os.path.join(outdir, ".audio_checkpoints", "episode")
+            seg_dir = os.path.join(ckpt_dir, "segments")
+            os.makedirs(seg_dir, exist_ok=True)
+            seg1 = os.path.join(seg_dir, "seg_0001.wav")
+            with open(seg1, "wb") as f:
+                f.write(b"RIFF\x00\x00\x00\x00WAVE")
+
+            fake_tts_result = SimpleNamespace(
+                segment_files=[seg1],
+                manifest_path=os.path.join(ckpt_dir, "audio_manifest.json"),
+                summary_path=os.path.join(ckpt_dir, "run_summary.json"),
+                checkpoint_dir=ckpt_dir,
+            )
+            args = argparse.Namespace(
+                script_path=script_path,
+                outdir=outdir,
+                basename="episode",
+                profile=None,
+                resume=False,
+                resume_force=False,
+                force_unlock=False,
+                allow_raw_only=True,
+                verbose=False,
+                debug=False,
+                dry_run_cleanup=False,
+                force_clean=False,
+            )
+
+            fake_mixer = mock.Mock()
+            fake_mixer.check_dependencies.side_effect = RuntimeError("ffmpeg missing")
+            fake_synth = mock.Mock()
+            fake_synth.synthesize.return_value = fake_tts_result
+
+            with mock.patch.object(make_podcast, "parse_args", return_value=args):
+                with mock.patch.object(make_podcast.OpenAIClient, "from_configs", return_value=_FakeClient()):
+                    with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
+                        with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
+                            with mock.patch.dict(
+                                os.environ,
+                                {"SCRIPT_QUALITY_GATE_ACTION": "off"},
+                                clear=False,
+                            ):
+                                rc = make_podcast.main()
+
+            self.assertEqual(rc, 1)
+            self.assertFalse(os.path.exists(os.path.join(outdir, "episode_raw_only.mp3")))
+
     def test_main_writes_normalized_script_snapshot_and_references_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             script_path = os.path.join(tmp, "script_structural.json")

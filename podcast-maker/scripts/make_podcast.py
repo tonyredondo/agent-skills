@@ -110,7 +110,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = str(value).strip().lower()
+    if normalized == "":
+        return default
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -203,6 +206,15 @@ def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
             pass
         raise
     return output_path
+
+
+def _segment_files_are_mp3(segment_files: list[str]) -> bool:
+    """Return True only when every segment path is an MP3 file."""
+    for path in segment_files:
+        if str(path or "").strip().lower().endswith(".mp3"):
+            continue
+        return False
+    return True
 
 
 def _write_podcast_run_summary(path: str, payload: dict[str, object]) -> None:
@@ -616,6 +628,10 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     # Degraded path when ffmpeg is unavailable and raw-only mode
                     # is explicitly allowed.
+                    if not _segment_files_are_mp3(tts_result.segment_files):
+                        raise RuntimeError(
+                            "ffmpeg is required when raw-only fallback receives non-MP3 segments"
+                        )
                     raw_only = os.path.join(args.outdir, f"{args.basename}_raw_only.mp3")
                     final_path = _write_raw_only_mp3(tts_result.segment_files, raw_only)
                     raw_path = final_path

@@ -554,6 +554,23 @@ class TTSSynthesizer:
             f.write(content)
         os.replace(tmp, path)
 
+    def _write_json_atomic(self, path: str, payload: Dict[str, Any]) -> None:
+        """Write JSON payload atomically for resumable run summaries."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                f.write("\n")
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
     def _file_sha256(self, path: str) -> str:
         """Compute SHA-256 checksum for an audio artifact."""
         h = hashlib.sha256()
@@ -1189,9 +1206,7 @@ class TTSSynthesizer:
                 )
                 summary["failure_kinds"] = failed_kinds
                 summary["stuck_abort"] = any(is_stuck_error_kind(kind) for kind in failed_kinds)
-            with open(store.summary_path, "w", encoding="utf-8") as f:
-                json.dump(summary, f, ensure_ascii=False, indent=2, sort_keys=True)
-                f.write("\n")
+            self._write_json_atomic(store.summary_path, summary)
 
             if failed_segments:
                 failed_kinds = summarize_failure_kinds(
@@ -1287,9 +1302,7 @@ class TTSSynthesizer:
                     # Keep stuck signal anchored to the current operation error, not historical kinds.
                     "stuck_abort": is_stuck_error_kind(current_failure_kind),
                 }
-                with open(store.summary_path, "w", encoding="utf-8") as f:
-                    json.dump(summary, f, ensure_ascii=False, indent=2, sort_keys=True)
-                    f.write("\n")
+                self._write_json_atomic(store.summary_path, summary)
             except Exception:
                 pass
             raise
@@ -1310,9 +1323,7 @@ class TTSSynthesizer:
                     "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
                     "elapsed_seconds": round(time.time() - started, 2),
                 }
-                with open(store.summary_path, "w", encoding="utf-8") as f:
-                    json.dump(summary, f, ensure_ascii=False, indent=2, sort_keys=True)
-                    f.write("\n")
+                self._write_json_atomic(store.summary_path, summary)
             except Exception:
                 pass
             raise
