@@ -67,6 +67,32 @@ class SchemaUtilsTests(unittest.TestCase):
             "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
         )
 
+    def test_normalize_line_keeps_valid_pace_hint(self) -> None:
+        line = normalize_line(
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Speak in a warm and clear tone.",
+                "pace_hint": " Brisk ",
+                "text": "hola",
+            },
+            0,
+        )
+        self.assertEqual(line.get("pace_hint"), "brisk")
+
+    def test_normalize_line_drops_invalid_pace_hint(self) -> None:
+        line = normalize_line(
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Speak in a warm and clear tone.",
+                "pace_hint": "turbo",
+                "text": "hola",
+            },
+            0,
+        )
+        self.assertNotIn("pace_hint", line)
+
     def test_validate_script_payload_rejects_empty(self) -> None:
         with self.assertRaises(ValueError):
             validate_script_payload({"lines": []})
@@ -100,7 +126,7 @@ class SchemaUtilsTests(unittest.TestCase):
     def test_salvage_script_payload_recovers_legacy_line_fields(self) -> None:
         payload = {
             "lines": [
-                {"name": "Ana", "content": "Primera linea recuperada."},
+                {"name": "Ana", "content": "Primera linea recuperada.", "pace_hint": "calm"},
                 {"name": "Luis", "dialogue": "Segunda linea recuperada."},
             ]
         }
@@ -110,6 +136,7 @@ class SchemaUtilsTests(unittest.TestCase):
         self.assertEqual(validated["lines"][0]["role"], "Host1")
         self.assertEqual(validated["lines"][1]["role"], "Host2")
         self.assertIn("recuperada", validated["lines"][0]["text"].lower())
+        self.assertEqual(validated["lines"][0].get("pace_hint"), "calm")
 
     def test_salvage_script_payload_recovers_nested_script_dialogue(self) -> None:
         payload = {

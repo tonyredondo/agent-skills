@@ -191,16 +191,17 @@ Duration policy:
 ## TTS instructions contract (hard cut)
 
 - `instructions` remains required per line, but now uses OpenAI-style natural language in English (1-2 short sentences).
-- Legacy field templates are deprecated and blocked in strict artifact validation (`Voice Affect: ... | Tone: ...` and `|` separators).
 - Recommended shape: `Speak in <tone/style>. Keep <pacing/clarity>. [Optional pronunciation hint]`.
+- Optional per-line field: `pace_hint` with enum `calm|steady|brisk`.
 - Deterministic defaults:
   - Host1: `Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.`
   - Host2: `Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.`
-- Runtime TTS refinement is deterministic:
+- Runtime TTS refinement is deterministic and best effort:
   - applies phase overlay to all segments (`intro`/`body`/`closing`)
-  - keeps quantitative cadence under `speed` control
+  - keeps quantitative cadence under runtime `speed` control
+  - when `TTS_SPEED_HINTS_ENABLED=1`, applies deterministic `pace_hint` multipliers + clamp + global smoothing
   - rewrites conflicting cadence hints so final `instructions` and effective `speed` stay coherent
-- Legacy script/checkpoint artifacts are never preserved as-is; the pipeline regenerates normalized instructions from available source payloads when possible.
+  - if hint resolution/smoothing fails, falls back to `speed=1.0` and continues (no pipeline abort)
 
 Override length controls as needed:
 
@@ -223,7 +224,7 @@ If input/config changed and you intentionally want to continue:
 
 Current major release uses checkpoint format v3 by default (`CHECKPOINT_VERSION=3`).
 Runs/checkpoints from previous major versions are not guaranteed to resume cleanly; regenerate when in doubt.
-If resume data includes legacy `instructions` templates, those lines are discarded and regenerated before continuing.
+For speed hints, resume reuses persisted `effective_speed` when available; if seed data is missing/corrupt, speed falls back to `1.0` with warning and run continues.
 
 ## Debugging
 
@@ -287,6 +288,8 @@ Common environment variables:
   - `TTS_SPEED_CLOSING` (default `1.0`, inherits neutral speed)
   - `TTS_PHASE_INTRO_RATIO` (default `0.15`)
   - `TTS_PHASE_CLOSING_RATIO` (default `0.15`)
+  - `TTS_SPEED_HINTS_ENABLED=0|1` (default `1`, enables optional `pace_hint`)
+  - `TTS_SPEED_HINTS_MAX_DELTA` (default `0.08`, anti-jitter smoothing cap)
   - if a phase speed is invalid (non-numeric/NaN), it falls back to `TTS_SPEED_DEFAULT`
 - TTS backoff: `TTS_RETRY_BACKOFF_BASE_MS`, `TTS_RETRY_BACKOFF_MAX_MS`
 - TTS watchdog/chunking: `TTS_GLOBAL_TIMEOUT_SECONDS`, `CHUNK_LINES`, `PAUSE_BETWEEN_SEGMENTS_MS`
@@ -352,6 +355,7 @@ SLO events include `failure_kind` for faster triage in rollbacks and runbooks
 (including `script_quality_rejected` when the pre-audio gate blocks synthesis and `source_too_short` when source validation enforce blocks script generation).
 Run summaries also include `phase_seconds` (including `generation`, `quality_eval`, `repair`) and source validation metrics (`source_word_count`, `source_to_target_ratio`, `target_word_range`).
 TTS summaries/manifests include cadence observability fields: `tts_phase_counts`, `tts_speed_stats`, `tts_phase_speed_stats`.
+With speed hints enabled, summaries/manifests also include: `pace_hint_counts`, `pace_hint_applied_ratio`, `speed_delta_clamped_count`, `speed_hint_invalid_count`, `speed_hint_fallback_1x_count`, and `speed_hint_resume_seed_missing_count`.
 The speech endpoint currently does not use SSML/pitch controls in this flow; expressiveness is tuned with per-line `instructions` plus per-segment `speed`.
 Each script run also writes `run_manifest.json` and `pipeline_summary.json` under `<script_checkpoint_dir>/<episode_id>/` with per-stage status (`script`, `audio`, `bundle`) and explicit states (`not_started`, `started`, `running`, `partial`, `interrupted`, `failed`, `completed`).
 Run summaries include handoff and audio-state markers (`handoff_to_audio_started`, `handoff_to_audio_completed`, `audio_executed`, `audio_stage`) where `audio_stage` can be `not_started`, `started`, `completed`, `failed_before_tts`, or `failed_during_tts`.
@@ -362,6 +366,10 @@ Recommended cadence presets by duration profile:
 - `standard`: keep neutral unless voice quality is already validated (`1.0`, `1.0`, `1.0`)
 - `long`: only tune if needed and in small steps (`0.98`-`1.02` range recommended)
 - If voices sound robotic with phase speed changes, keep all three phase speeds at `1.0`.
+- Speed-hint rollout:
+  - stage 1: canary/smoke with `TTS_SPEED_HINTS_ENABLED=1`
+  - stage 2: keep default-on and monitor metrics
+  - rollback: set `TTS_SPEED_HINTS_ENABLED=0` (no code rollback required)
 
 ## Debug bundle export
 

@@ -406,6 +406,8 @@ class AudioConfig:
     tts_speed_closing: float
     tts_phase_intro_ratio: float
     tts_phase_closing_ratio: float
+    tts_speed_hints_enabled: bool
+    tts_speed_hints_max_delta: float
 
     @staticmethod
     def from_env(*, profile_name: Optional[str] = None) -> "AudioConfig":
@@ -432,6 +434,8 @@ class AudioConfig:
         tts_speed_closing = _read_tts_speed("TTS_SPEED_CLOSING", tts_speed_default)
         tts_phase_intro_ratio = _clamp_float(_env_float("TTS_PHASE_INTRO_RATIO", 0.15), 0.0, 0.45)
         tts_phase_closing_ratio = _clamp_float(_env_float("TTS_PHASE_CLOSING_RATIO", 0.15), 0.0, 0.45)
+        tts_speed_hints_enabled = _env_bool("TTS_SPEED_HINTS_ENABLED", True)
+        tts_speed_hints_max_delta = _clamp_float(_env_float("TTS_SPEED_HINTS_MAX_DELTA", 0.08), 0.0, 1.0)
         return AudioConfig(
             model=_env_str("TTS_MODEL", "gpt-4o-mini-tts"),
             timeout_seconds=max(5, _env_int("TTS_TIMEOUT_SECONDS", _env_int("TTS_TIMEOUT", 60))),
@@ -457,6 +461,8 @@ class AudioConfig:
             tts_speed_closing=tts_speed_closing,
             tts_phase_intro_ratio=tts_phase_intro_ratio,
             tts_phase_closing_ratio=tts_phase_closing_ratio,
+            tts_speed_hints_enabled=tts_speed_hints_enabled,
+            tts_speed_hints_max_delta=tts_speed_hints_max_delta,
         )
 
 
@@ -477,7 +483,11 @@ def config_fingerprint(
     if script_cfg is not None:
         payload["script"] = dataclasses.asdict(script_cfg)
     if audio_cfg is not None:
-        payload["audio"] = dataclasses.asdict(audio_cfg)
+        audio_payload = dataclasses.asdict(audio_cfg)
+        # Do not block resume when speed-hint tuning toggles; hints are best-effort.
+        audio_payload.pop("tts_speed_hints_enabled", None)
+        audio_payload.pop("tts_speed_hints_max_delta", None)
+        payload["audio"] = audio_payload
     if reliability_cfg is not None:
         payload["reliability"] = dataclasses.asdict(reliability_cfg)
     if extra:

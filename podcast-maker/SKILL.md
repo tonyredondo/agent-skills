@@ -192,6 +192,8 @@ Useful env vars:
   - `TTS_SPEED_CLOSING` (default `1.0`, inherits neutral speed)
   - `TTS_PHASE_INTRO_RATIO` (default `0.15`)
   - `TTS_PHASE_CLOSING_RATIO` (default `0.15`)
+  - `TTS_SPEED_HINTS_ENABLED=0|1` (default `1`, enables optional `pace_hint`)
+  - `TTS_SPEED_HINTS_MAX_DELTA` (default `0.08`, anti-jitter smoothing cap)
   - invalid phase speed values fallback to `TTS_SPEED_DEFAULT`
 - `OPENAI_CIRCUIT_BREAKER_FAILURES`
 - `ESTIMATED_COST_PER_SCRIPT_REQUEST_USD`, `ESTIMATED_COST_PER_TTS_REQUEST_USD`
@@ -256,6 +258,7 @@ Budget/guardrails (optional):
 Run summaries are saved in checkpoint folders as JSON for post-mortem.
 Run summaries include phase timings and source validation metrics.
 Audio run summaries/manifests also include cadence metrics: `tts_phase_counts`, `tts_speed_stats`, `tts_phase_speed_stats`.
+With speed hints enabled, summaries/manifests also include `pace_hint_counts`, `pace_hint_applied_ratio`, `speed_delta_clamped_count`, `speed_hint_invalid_count`, `speed_hint_fallback_1x_count`, and `speed_hint_resume_seed_missing_count`.
 Script checkpoint folder also stores:
 - `run_manifest.json` (stage states: script/audio/bundle)
 - `pipeline_summary.json` (overall state with explicit `not_started`, `started`, `running`, `partial`, `interrupted`, `failed`, `completed`)
@@ -264,7 +267,7 @@ Quality-gate enforcement failures are emitted as `failure_kind=script_quality_re
 Script failures propagate structured run-summary signals (`stuck_abort`, `invalid_schema`, `failure_kind`) to SLO events.
 Source-validation enforce blocks are emitted as `failure_kind=source_too_short`.
 `stuck_abort` is computed from structured failure kinds/signals instead of log wording.
-If resume/script artifacts contain legacy field-template instructions, the pipeline regenerates normalized instructions before continuing.
+If speed-hint resume seed data is missing/corrupt, effective speed falls back to `1.0` and the pipeline continues with a warning.
 
 ## JSON format
 
@@ -276,6 +279,7 @@ Expected `script.json`:
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
+      "pace_hint": "steady",
       "text": "Hola y bienvenidos..."
     },
     {
@@ -302,7 +306,11 @@ Expected `script.json`:
   - `standard`: keep neutral by default (`1.0`, `1.0`, `1.0`)
   - `long`: only adjust in small steps (`0.98`-`1.02`) after listening checks
   - if voices sound robotic with per-phase speed, keep all phase speeds at `1.0`
-- `instructions` contract is OpenAI-style natural language (English, 1-2 short sentences); do not use legacy templates like `Voice Affect: ... | Tone: ...`.
+- `instructions` contract is OpenAI-style natural language (English, 1-2 short sentences); optional `pace_hint` uses `calm|steady|brisk`.
+- Speed-hint rollout:
+  - stage 1: canary/smoke with `TTS_SPEED_HINTS_ENABLED=1`
+  - stage 2: keep default-on and monitor metrics
+  - rollback: set `TTS_SPEED_HINTS_ENABLED=0` (no code rollback required)
 - This flow does not expose SSML/pitch parameters directly; tune expressiveness with line `instructions` plus segment `speed`.
 - Input file decoding supports fallback (`utf-8`, `utf-8-sig`, `cp1252`, `latin-1`).
 - The pipeline keeps detailed logs in `stderr`, while `stdout` prints final output path.

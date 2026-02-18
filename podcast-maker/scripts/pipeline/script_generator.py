@@ -128,6 +128,27 @@ class ScriptGenerator:
         by_stage[key] = values
         self._fallback_modes_by_stage = by_stage
 
+    def _tts_speed_hints_enabled(self) -> bool:
+        """Return whether optional pace-hint prompting is enabled."""
+        return _env_bool("TTS_SPEED_HINTS_ENABLED", False)
+
+    def _line_schema_fields_prompt(self) -> str:
+        """Describe expected JSON line keys for current runtime mode."""
+        if self._tts_speed_hints_enabled():
+            return "speaker, role, instructions, optional pace_hint, text"
+        return "speaker, role, instructions, text"
+
+    def _pace_hint_prompt_guidance(self) -> str:
+        """Prompt block for optional pace_hint generation when enabled."""
+        if not self._tts_speed_hints_enabled():
+            return ""
+        return (
+            "- Optional field `pace_hint`: calm|steady|brisk.\n"
+            "- Prefer `steady` by default; use `calm`/`brisk` only for clear narrative intent.\n"
+            "- Keep adjacent turns coherent; avoid oscillating pace_hint values without a clear reason.\n"
+            "- If there is no clear pace signal, omit `pace_hint`."
+        )
+
     def _can_use_contextual_fallback_llm(self) -> bool:
         """Return True when client supports contextual schema rewrites."""
         return (
@@ -187,6 +208,8 @@ class ScriptGenerator:
         """Build contextual fallback prompt for continuation recovery."""
         current_words = count_words_from_lines(lines_so_far)
         remaining_to_min = max(0, int(min_words) - int(current_words))
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         recent = _recent_dialogue(
             lines_so_far,
             max(8, min(self.config.max_context_lines, CONTEXTUAL_FALLBACK_RECENT_LINES)),
@@ -210,13 +233,14 @@ class ScriptGenerator:
         return textwrap.dedent(
             f"""
             Continue this podcast script with NEW lines only.
-            Return ONLY JSON with key "lines" and fields: speaker, role, instructions, text.
+            Return ONLY JSON with key "lines" and fields: {line_fields}.
 
             Hard constraints:
             - Keep spoken text in the same language/tone as recent context (Spanish by default).
             - Keep role values Host1/Host2 and strict alternation.
             - Keep instructions in English as short natural-language guidance (1-2 sentences).
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            {pace_hint_guidance}
             - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Avoid generic filler and prefab lines; every line must be contextual and specific to this episode.
             - Preserve factual consistency with source context.
@@ -303,6 +327,8 @@ class ScriptGenerator:
     ) -> str:
         """Build postprocess tail-finalization prompt with source context."""
         payload = canonical_json({"lines": lines})
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         source_snippet = self._compact_source_context(
             source_context,
             max_chars=CONTEXTUAL_FALLBACK_SOURCE_MAX_CHARS,
@@ -311,7 +337,7 @@ class ScriptGenerator:
         return textwrap.dedent(
             f"""
             Refine this podcast script JSON with minimal edits, focusing on the ending quality.
-            Return ONLY JSON object with key "lines" and fields: speaker, role, instructions, text.
+            Return ONLY JSON object with key "lines" and fields: {line_fields}.
 
             Goals:
             - Keep the script natural, specific, and contextual (no prefab filler).
@@ -323,6 +349,7 @@ class ScriptGenerator:
             Constraints:
             - Keep spoken text in the script language and instructions in English as short natural-language guidance (1-2 sentences).
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            {pace_hint_guidance}
             - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Keep Host1/Host2 alternation and consistent speakers.
             - Preserve source-grounded facts and avoid fabricated details.
@@ -869,6 +896,8 @@ class ScriptGenerator:
         transition_guidance = self._transition_guidance()
         precision_guidance = self._precision_guidance()
         author_guidance = self._author_reference_guidance(source_text=source_chunk)
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         opening_agenda_guidance = self._opening_agenda_guidance(
             chunk_idx=chunk_idx,
             chunk_total=chunk_total,
@@ -887,13 +916,14 @@ class ScriptGenerator:
             f"""
             You are writing a Spanish podcast script with two presenters (Host1 and Host2).
             Requirements:
-            - Output JSON object with key "lines" (array), each line includes: speaker, role, instructions, text.
+            - Output JSON object with key "lines" (array), each line includes: {line_fields}.
             - speaker must be a real person name and consistent through the episode.
             - role must be Host1 or Host2.
             - Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             - Spoken text must be in Spanish.
             - instructions MUST be in English as short natural-language guidance (1-2 sentences).
             - Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            {pace_hint_guidance}
             - Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             - Keep instructions consistent per speaker and avoid contradictory speed cues.
             - Good examples:
@@ -1019,11 +1049,14 @@ class ScriptGenerator:
         compact = json.dumps(payload, ensure_ascii=False)
         if len(compact) > 120000:
             compact = compact[:120000]
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         return textwrap.dedent(
             f"""
             Repair this JSON object so it strictly follows the schema with key "lines".
-            Each line must contain: speaker, role, instructions, text.
+            Each line must contain: {line_fields}.
             Keep instructions in English as short natural-language guidance (1-2 sentences).
+            {pace_hint_guidance}
             Keep semantics and wording as much as possible.
             Output ONLY JSON.
 
@@ -1824,6 +1857,7 @@ class ScriptGenerator:
         transition_guidance = self._transition_guidance()
         precision_guidance = self._precision_guidance()
         author_guidance = self._author_reference_guidance()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         return textwrap.dedent(
             f"""
             Continue the same Spanish podcast episode.
@@ -1832,6 +1866,7 @@ class ScriptGenerator:
             Expand with clarifying examples and useful Q&A.
             Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
             Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            {pace_hint_guidance}
             Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Do not mention internal tooling or research workflow details (for example script paths, shell commands, "DailyRead pipeline", "Tavily", "Serper").
@@ -1891,12 +1926,15 @@ class ScriptGenerator:
         transition_guidance = self._transition_guidance()
         precision_guidance = self._precision_guidance()
         author_guidance = self._author_reference_guidance()
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
         return textwrap.dedent(
             f"""
             Continue and safely complete this Spanish podcast script without rewriting previous lines.
-            Return ONLY JSON with key "lines" and fields: speaker, role, instructions, text.
+            Return ONLY JSON with key "lines" and fields: {line_fields}.
             Keep spoken text in Spanish and instructions in English as short natural-language guidance (1-2 sentences).
             Keep instructions specific and actionable (tone, clarity, delivery, optional pronunciation hints).
+            {pace_hint_guidance}
             Keep both hosts lively and engaging: Host1 warm/confident with upbeat energy, Host2 bright/friendly with expressive curiosity.
             Alternate turns strictly between Host1 and Host2 (no consecutive turns by the same role).
             Fix abrupt/incomplete ending and provide a coherent closing flow.
