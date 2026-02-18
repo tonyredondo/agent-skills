@@ -205,6 +205,15 @@ def _write_raw_only_mp3(segment_files: list[str], output_path: str) -> str:
     return output_path
 
 
+def _segment_files_are_mp3(segment_files: list[str]) -> bool:
+    """Return True only when every segment path is an MP3 file."""
+    for path in segment_files:
+        if str(path or "").strip().lower().endswith(".mp3"):
+            continue
+        return False
+    return True
+
+
 def _write_podcast_run_summary(path: str, payload: dict[str, object]) -> None:
     """Persist podcast run summary atomically."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -616,6 +625,10 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     # Degraded path when ffmpeg is unavailable and raw-only mode
                     # is explicitly allowed.
+                    if not _segment_files_are_mp3(tts_result.segment_files):
+                        raise RuntimeError(
+                            "ffmpeg is required when raw-only fallback receives non-MP3 segments"
+                        )
                     raw_only = os.path.join(args.outdir, f"{args.basename}_raw_only.mp3")
                     final_path = _write_raw_only_mp3(tts_result.segment_files, raw_only)
                     raw_path = final_path
