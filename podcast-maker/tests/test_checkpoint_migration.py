@@ -83,6 +83,32 @@ class CheckpointMigrationTests(unittest.TestCase):
                     resume_force=False,
                 )
 
+    def test_audio_manifest_resume_backfills_legacy_audio_metadata(self) -> None:
+        reliability = dataclasses.replace(ReliabilityConfig.from_env(), checkpoint_version="3.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AudioCheckpointStore(base_dir=tmp, episode_id="ep_audio_legacy", reliability=reliability)
+            manifest = store.init_manifest(
+                config_fingerprint="cfg",
+                script_hash="script",
+                segments=[
+                    {
+                        "segment_id": "0001",
+                        "index": 1,
+                        "file_name": "seg_0001.mp3",
+                        "status": "done",
+                    }
+                ],
+            )
+            migrated = store.validate_resume(
+                manifest,
+                config_fingerprint="cfg",
+                script_hash="script",
+                resume_force=False,
+            )
+            self.assertTrue(migrated)
+            self.assertEqual(manifest["segments"][0].get("audio_format"), "mp3")
+            self.assertEqual(manifest["segments"][0].get("content_type"), "audio/mpeg")
+
 
 if __name__ == "__main__":
     unittest.main()

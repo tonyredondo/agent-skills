@@ -18,6 +18,7 @@ from pipeline.errors import ERROR_KIND_STUCK, TTSOperationError  # noqa: E402
 from pipeline.logging_utils import Logger  # noqa: E402
 from pipeline.script_generator import ScriptGenerator  # noqa: E402
 from pipeline.tts_synthesizer import TTSSynthesizer  # noqa: E402
+from pipeline.tts_provider import TTSAudioResult  # noqa: E402
 
 
 class _InterruptScriptClient:
@@ -75,6 +76,22 @@ class _VerySlowInterruptTTSClient(_InterruptTTSClient):
         self.started.set()
         time.sleep(3.0)
         return b"ID3"
+
+
+class _InterruptAlibabaProvider(_InterruptTTSClient):
+    provider_name = "alibaba"
+    model_name = "qwen3-tts-instruct-flash"
+    default_file_extension = "wav"
+
+    def synthesize_speech(self, **kwargs):  # noqa: ANN003, ANN201
+        self.requests_made += 1
+        return TTSAudioResult(
+            audio_bytes=b"RIFF\x00\x00\x00\x00WAVEfmt ",
+            content_type="audio/wav",
+            file_extension="wav",
+            provider="alibaba",
+            model="qwen3-tts-instruct-flash",
+        )
 
 
 class _StuckTTSClient(_InterruptTTSClient):
@@ -162,6 +179,33 @@ class InterruptionTests(unittest.TestCase):
             with open(summary, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             self.assertEqual(payload.get("status"), "interrupted")
+
+    def test_tts_synthesizer_interrupts_before_chunk_with_provider_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = AudioConfig.from_env(profile_name="short")
+            cfg = dataclasses.replace(
+                cfg,
+                tts_provider="alibaba",
+                checkpoint_dir=os.path.join(tmp, "audio"),
+                chunk_lines=1,
+                max_concurrent=1,
+            )
+            synth = TTSSynthesizer(
+                config=cfg,
+                reliability=ReliabilityConfig.from_env(),
+                logger=self._logger(),
+                client=_InterruptAlibabaProvider(),  # type: ignore[arg-type]
+            )
+            lines = [
+                {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "hola"},
+                {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "mundo"},
+            ]
+            with self.assertRaises(InterruptedError):
+                synth.synthesize(
+                    lines=lines,
+                    episode_id="ep_i_provider_contract",
+                    cancel_check=lambda: True,
+                )
 
     def test_tts_synthesizer_interrupt_does_not_leave_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -18,6 +18,7 @@ This document describes the production pipeline for script and audio generation.
 
 - Run commands from the skill root directory (`.../podcast-maker`).
 - `OPENAI_API_KEY` must be set, or available in `~/.codex/auth.json`.
+- If `TTS_PROVIDER=alibaba`, `DASHSCOPE_API_KEY` is also required (env or `~/.codex/auth.json`).
 - `ffmpeg` is required for full audio post-processing.
 - Python `3.10+` is required.
 
@@ -28,6 +29,15 @@ This document describes the production pipeline for script and audio generation.
 - Checkpoint + resume for script and TTS
 - Strong observability (progress, heartbeat, summaries)
 - Single, consistent pipeline
+
+## TTS provider scope (v1)
+
+- Provider selection is environment-only: `TTS_PROVIDER=openai|alibaba` (default `openai`).
+- v1 includes Alibaba Instruct only (`qwen3-tts-instruct-flash` family).
+- v1 explicitly excludes realtime mode and voice design (`qwen3-tts-instruct-flash-realtime`, `qwen-voice-design`).
+- `make_podcast.py` keeps global OpenAI dependency in v1 (quality gate still requires `OPENAI_API_KEY` even when Alibaba TTS is selected).
+- Operational rollback is immediate: set `TTS_PROVIDER=openai`.
+- Raw-only fallback (`--allow-raw-only`) supports direct concatenation only for MP3 segments. Non-MP3 segments require `ffmpeg`.
 
 ## Architecture diagram
 
@@ -226,7 +236,7 @@ Common environment variables:
 - Canonical reference: `ENV_REFERENCE.md` (single source for defaults from `config.py` + entrypoints)
 
 - Logging: `LOG_LEVEL`, `LOG_HEARTBEAT_SECONDS`, `LOG_DEBUG_EVENTS`
-- Models: `SCRIPT_MODEL`/`MODEL`, `TTS_MODEL`
+- Models: `SCRIPT_MODEL`/`MODEL`, `TTS_MODEL`, `TTS_OPENAI_MODEL`, `TTS_ALIBABA_MODEL`
 - Script reasoning effort: `SCRIPT_REASONING_EFFORT=low|medium|high` (default `low`)
 - Quality-eval-only reasoning override: `SCRIPT_QUALITY_EVAL_REASONING_EFFORT=low|medium|high` (default `high`, stage `script_quality_eval` only)
 - Script style controls:
@@ -260,11 +270,21 @@ Common environment variables:
 - Source-to-target validation: `SCRIPT_SOURCE_VALIDATION_MODE=off|warn|enforce`, `SCRIPT_SOURCE_VALIDATION_WARN_RATIO`, `SCRIPT_SOURCE_VALIDATION_ENFORCE_RATIO`
   - default policy (unset): `short=warn(0.35/0.22)`, `standard=enforce(0.50/0.35)`, `long=enforce(0.60/0.45)`
 - TTS retries/timeouts/concurrency: `TTS_RETRIES`, `TTS_TIMEOUT_SECONDS`, `TTS_MAX_CONCURRENT`
+- TTS provider selection:
+  - `TTS_PROVIDER=openai|alibaba` (default `openai`)
+  - Alibaba base URL: `TTS_ALIBABA_BASE_URL` (default `https://dashscope-intl.aliyuncs.com/api/v1`)
+  - Alibaba language + instruction optimization:
+    - `TTS_ALIBABA_LANGUAGE_TYPE` (default `Spanish`)
+    - `TTS_ALIBABA_OPTIMIZE_INSTRUCTIONS=0|1` (default `1`)
 - TTS voice assignment:
   - `TTS_VOICE_ASSIGNMENT_MODE=auto|role|speaker_gender` (default `auto`)
   - role fallback voices: `TTS_HOST1_VOICE` (default `cedar`), `TTS_HOST2_VOICE` (default `marin`)
   - speaker-name gender hints: `TTS_FEMALE_VOICE` (default `marin`), `TTS_MALE_VOICE` (default `cedar`)
   - generic fallback when role/name is unknown: `TTS_DEFAULT_VOICE` (default Host1 voice)
+  - Alibaba voices:
+    - `TTS_ALIBABA_FEMALE_VOICE` (default `Cherry`)
+    - `TTS_ALIBABA_MALE_VOICE` (default `Ethan`)
+    - `TTS_ALIBABA_DEFAULT_VOICE` (default `Cherry`)
 - TTS cadence controls (all speed values are clamped to `0.25..4.0`):
   - `TTS_SPEED_DEFAULT` (default `1.0`)
   - `TTS_SPEED_INTRO` (default `1.0`, inherits neutral speed)
@@ -322,6 +342,25 @@ Common environment variables:
 - Audio fallback: `ALLOW_RAW_ONLY=1`
 - Cleanup/retention: `RETENTION_CHECKPOINT_DAYS`, `RETENTION_LOG_DAYS`, `RETENTION_INTERMEDIATE_AUDIO_DAYS`
 - Disk/budget guardrails: `MIN_FREE_DISK_MB`, `MAX_CHECKPOINT_STORAGE_MB`, `MAX_LOG_STORAGE_MB`, `MAX_REQUESTS_PER_RUN`, `MAX_ESTIMATED_COST_USD`
+
+## Voice validation matrix (es-ES, enthusiastic)
+
+Use this rubric before promoting any voice to defaults (`TTS_*_VOICE` or `TTS_ALIBABA_*_VOICE`).
+Score each candidate 1-5 per dimension on at least 3 samples (intro/body/closing) and keep short notes.
+
+| Dimension | What to validate | Pass threshold |
+| --- | --- | --- |
+| Accent fidelity | Sounds like Spanish from Spain (not neutral LATAM/EN transfer) | >= 4 |
+| Enthusiasm control | Keeps high energy without sounding forced | >= 4 |
+| Prosody stability | Natural pauses, sentence rhythm, no robotic drift | >= 4 |
+| Pronunciation clarity | Proper names and technical terms stay intelligible | >= 4 |
+| Listener comfort | No fatigue in 5-10 minute continuous playback | >= 4 |
+
+Promotion criteria:
+
+- Male and female selected voices must both pass with average >= 4.2.
+- No single dimension can be below 4 in final selection.
+- Re-run validation when changing model, region/base URL, or instruction template.
 
 SLO gate env (optional):
 

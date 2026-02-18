@@ -511,6 +511,17 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertTrue(bool(report.get("pass", False)))
         self.assertEqual(list(report.get("reasons", [])), [])
 
+    def test_repair_script_completeness_adds_terminal_punctuation_to_last_line(self) -> None:
+        lines = [
+            {"speaker": "Carlos", "role": "Host1", "instructions": "x", "text": "Contexto inicial bien formado."},
+            {"speaker": "Lucia", "role": "Host2", "instructions": "x", "text": "Cierre aun incompleto"},
+        ]
+        repaired = repair_script_completeness(lines)
+        self.assertTrue(str(repaired[-1]["text"]).endswith("."))
+        report = evaluate_script_completeness(repaired)
+        self.assertTrue(bool(report.get("pass", False)))
+        self.assertEqual(list(report.get("reasons", [])), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -338,6 +338,13 @@ class OpenAIClient:
             self._check_budget()
             self._track_usage(request_kind=request_kind)
 
+    def check_budget(self) -> None:
+        with self._state_lock:
+            self._check_budget()
+
+    def reserve_request_slot(self, *, request_kind: str) -> None:
+        self._reserve_request_slot(request_kind=request_kind)
+
     def _post_json(
         self,
         *,
