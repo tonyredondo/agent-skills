@@ -264,6 +264,7 @@ Quality-gate enforcement failures are emitted as `failure_kind=script_quality_re
 Script failures propagate structured run-summary signals (`stuck_abort`, `invalid_schema`, `failure_kind`) to SLO events.
 Source-validation enforce blocks are emitted as `failure_kind=source_too_short`.
 `stuck_abort` is computed from structured failure kinds/signals instead of log wording.
+If resume/script artifacts contain legacy field-template instructions, the pipeline regenerates normalized instructions before continuing.
 
 ## JSON format
 
@@ -274,13 +275,13 @@ Expected `script.json`:
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Hola y bienvenidos..."
     },
     {
       "speaker": "Lucía",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Gracias, hoy hablaremos de..."
     }
   ]
@@ -301,6 +302,7 @@ Expected `script.json`:
   - `standard`: keep neutral by default (`1.0`, `1.0`, `1.0`)
   - `long`: only adjust in small steps (`0.98`-`1.02`) after listening checks
   - if voices sound robotic with per-phase speed, keep all phase speeds at `1.0`
+- `instructions` contract is OpenAI-style natural language (English, 1-2 short sentences); do not use legacy templates like `Voice Affect: ... | Tone: ...`.
 - This flow does not expose SSML/pitch parameters directly; tune expressiveness with line `instructions` plus segment `speed`.
 - Input file decoding supports fallback (`utf-8`, `utf-8-sig`, `cp1252`, `latin-1`).
 - The pipeline keeps detailed logs in `stderr`, while `stdout` prints final output path.

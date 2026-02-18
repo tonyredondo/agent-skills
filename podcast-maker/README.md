@@ -188,6 +188,20 @@ Duration policy:
 - if source metadata includes attribution, keep it explicit in the text (for example: `Autor: ...`, `Autores: ...`, `Author: ...`) so the script can reference the author(s) naturally
 - if source includes multiple topics or an explicit index/agenda, include those topic cues in the source so the opening can deliver a short roadmap (for example: `hoy hablaremos de...` then `comenzamos con...`)
 
+## TTS instructions contract (hard cut)
+
+- `instructions` remains required per line, but now uses OpenAI-style natural language in English (1-2 short sentences).
+- Legacy field templates are deprecated and blocked in strict artifact validation (`Voice Affect: ... | Tone: ...` and `|` separators).
+- Recommended shape: `Speak in <tone/style>. Keep <pacing/clarity>. [Optional pronunciation hint]`.
+- Deterministic defaults:
+  - Host1: `Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.`
+  - Host2: `Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.`
+- Runtime TTS refinement is deterministic:
+  - applies phase overlay to all segments (`intro`/`body`/`closing`)
+  - keeps quantitative cadence under `speed` control
+  - rewrites conflicting cadence hints so final `instructions` and effective `speed` stay coherent
+- Legacy script/checkpoint artifacts are never preserved as-is; the pipeline regenerates normalized instructions from available source payloads when possible.
+
 Override length controls as needed:
 
 ```bash
@@ -209,6 +223,7 @@ If input/config changed and you intentionally want to continue:
 
 Current major release uses checkpoint format v3 by default (`CHECKPOINT_VERSION=3`).
 Runs/checkpoints from previous major versions are not guaranteed to resume cleanly; regenerate when in doubt.
+If resume data includes legacy `instructions` templates, those lines are discarded and regenerated before continuing.
 
 ## Debugging
 

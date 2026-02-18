@@ -41,47 +41,75 @@ from .schema import content_hash
 
 
 DEFAULT_HOST1_INSTR = (
-    "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | "
-    "Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief"
+    "Speak in a warm, confident, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
 )
 DEFAULT_HOST2_INSTR = (
-    "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | "
-    "Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief"
+    "Speak in a bright, friendly, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
 )
+MAX_INSTRUCTIONS_CHARS = 220
 
 PHASE_INTRO = "intro"
 PHASE_BODY = "body"
 PHASE_CLOSING = "closing"
 VALID_SPEECH_PHASES = {PHASE_INTRO, PHASE_BODY, PHASE_CLOSING}
-INSTRUCTION_FIELDS_ORDER = (
-    "Voice Affect",
-    "Tone",
-    "Pacing",
-    "Emotion",
-    "Pronunciation",
-    "Pauses",
-)
-INSTRUCTION_FIELD_KEY_MAP = {re.sub(r"[^a-z]", "", field.lower()): field for field in INSTRUCTION_FIELDS_ORDER}
-PHASE_STYLE_OVERRIDES: Dict[str, Dict[str, str]] = {
-    PHASE_INTRO: {
-        "Tone": "Conversational and inviting",
-        "Pacing": "Brisk but clear",
-        "Emotion": "Enthusiasm",
-        "Pauses": "Brief",
-    },
-    PHASE_BODY: {
-        "Tone": "Conversational and analytical",
-        "Pacing": "Measured",
-        "Emotion": "Focus",
-        "Pauses": "Balanced",
-    },
-    PHASE_CLOSING: {
-        "Tone": "Warm and appreciative",
-        "Pacing": "Calm",
-        "Emotion": "Gratitude",
-        "Pauses": "Slightly longer",
-    },
+PHASE_INSTRUCTION_OVERLAYS: Dict[str, str] = {
+    PHASE_INTRO: "For this intro segment, sound inviting and energetic without rushing.",
+    PHASE_BODY: "Keep an analytical, steady delivery focused on clarity.",
+    PHASE_CLOSING: "Use a warm, appreciative cadence for the closing summary and farewell.",
 }
+LEGACY_INSTRUCTION_MARKERS = (
+    "voice affect:",
+    "tone:",
+    "pacing:",
+    "emotion:",
+    "pronunciation:",
+    "pauses:",
+)
+ACTIONABLE_INSTRUCTION_HINTS = (
+    "tone",
+    "pacing",
+    "pace",
+    "clarity",
+    "clear",
+    "pronounce",
+    "pronunciation",
+    "warm",
+    "friendly",
+    "confident",
+    "analytical",
+    "inviting",
+    "energetic",
+    "appreciative",
+    "delivery",
+    "cadence",
+    "pause",
+)
+AMBIGUOUS_INSTRUCTION_PHRASES = (
+    "speak naturally",
+    "do your best",
+    "good voice",
+)
+SLOW_CADENCE_HINTS = (
+    "slowly",
+    "slower",
+    "unhurried",
+    "leisurely",
+    "long pause",
+    "long pauses",
+)
+FAST_CADENCE_HINTS = (
+    "fast",
+    "faster",
+    "quick",
+    "quickly",
+    "rapid",
+    "rapidly",
+    "brisk",
+    "rushed",
+    "hurried",
+)
 
 
 def _clamp_tts_speed(value: Any, *, fallback: float = 1.0) -> float:
@@ -105,50 +133,69 @@ def _normalize_phase(value: str) -> str:
     return PHASE_BODY
 
 
-def _normalize_instruction_key(value: str) -> str:
-    """Normalize instruction keys to canonical field names."""
-    token = re.sub(r"[^a-z]", "", str(value or "").strip().lower())
-    return INSTRUCTION_FIELD_KEY_MAP.get(token, "")
+def _default_instructions_for_role(role: str) -> str:
+    """Return deterministic defaults for known host roles."""
+    if str(role or "").strip() == "Host2":
+        return DEFAULT_HOST2_INSTR
+    return DEFAULT_HOST1_INSTR
 
 
-def _parse_instruction_fields(instructions: str) -> Tuple[Dict[str, str], List[str]]:
-    """Parse instruction text into canonical fields plus extras."""
-    fields: Dict[str, str] = {}
-    extras: List[str] = []
-    for raw_part in str(instructions or "").split("|"):
-        part = raw_part.strip()
-        if not part:
-            continue
-        if ":" not in part:
-            extras.append(part)
-            continue
-        key_raw, value_raw = part.split(":", 1)
-        canonical_key = _normalize_instruction_key(key_raw)
-        value = str(value_raw or "").strip()
-        if canonical_key and value:
-            fields[canonical_key] = value
-        else:
-            extras.append(part)
-    return fields, extras
+def _clean_instruction_text(value: str) -> str:
+    """Normalize instruction whitespace into a single compact line."""
+    return " ".join(str(value or "").strip().split())
 
 
-def _render_instruction_fields(fields: Dict[str, str], extras: Optional[List[str]] = None) -> str:
-    """Render ordered instruction fields back into single-line format."""
-    parts: List[str] = []
-    for key in INSTRUCTION_FIELDS_ORDER:
-        value = str(fields.get(key, "")).strip()
-        if value:
-            parts.append(f"{key}: {value}")
-    if extras:
-        parts.extend(part for part in extras if str(part).strip())
-    return " | ".join(parts).strip()
+def _instruction_legacy_reason(instructions: str) -> str:
+    """Return reason if instruction text looks like deprecated legacy template."""
+    lowered = str(instructions or "").strip().lower()
+    if not lowered:
+        return ""
+    if "|" in lowered:
+        return "contains legacy field separator"
+    for marker in LEGACY_INSTRUCTION_MARKERS:
+        if marker in lowered:
+            return f"contains legacy marker '{marker}'"
+    return ""
 
 
-def _default_instruction_fields(role: str) -> Dict[str, str]:
-    """Return baseline instruction fields for Host1/Host2."""
-    base = DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
-    fields, _extras = _parse_instruction_fields(base)
-    return dict(fields)
+def _instruction_sentence_count(text: str) -> int:
+    """Count coarse sentence boundaries using basic punctuation markers."""
+    count = 0
+    in_sentence = False
+    for ch in str(text or ""):
+        if ch.strip():
+            in_sentence = True
+        if ch in ".!?" and in_sentence:
+            count += 1
+            in_sentence = False
+    if in_sentence:
+        count += 1
+    return count
+
+
+def _has_actionable_instruction_detail(text: str) -> bool:
+    """Detect whether instruction includes actionable speaking guidance."""
+    lowered = str(text or "").lower()
+    return any(token in lowered for token in ACTIONABLE_INSTRUCTION_HINTS)
+
+
+def _looks_ambiguous_instruction(text: str) -> bool:
+    """Detect vague instruction patterns that should fall back to defaults."""
+    lowered = str(text or "").lower()
+    if not lowered:
+        return True
+    for phrase in AMBIGUOUS_INSTRUCTION_PHRASES:
+        if phrase in lowered and not _has_actionable_instruction_detail(lowered):
+            return True
+    return False
+
+
+def _remove_conflicting_cadence_hints(text: str, blocked_hints: Tuple[str, ...]) -> str:
+    """Remove conflicting cadence words/phrases from instruction text."""
+    cleaned = str(text or "")
+    for hint in blocked_hints:
+        cleaned = re.sub(re.escape(hint), " ", cleaned, flags=re.IGNORECASE)
+    return _clean_instruction_text(cleaned)
 
 
 def _split_long_tts_sentence(sentence: str, max_chars: int) -> List[str]:
@@ -424,20 +471,54 @@ class TTSSynthesizer:
             fallback=self.config.tts_speed_default,
         )
 
-    def _refine_instructions_for_phase(self, *, instructions: str, role: str, phase: str) -> str:
-        """Merge phase style defaults with line-level instruction overrides."""
+    def _refine_instructions_for_phase(
+        self,
+        *,
+        instructions: str,
+        role: str,
+        phase: str,
+        speed: float,
+    ) -> str:
+        """Resolve final TTS instructions with phase/speed-safe guardrails."""
         normalized_phase = _normalize_phase(phase)
-        parsed_fields, extras = _parse_instruction_fields(instructions)
-        if not parsed_fields:
-            extras = []
-        merged = _default_instruction_fields(role)
-        merged.update(PHASE_STYLE_OVERRIDES.get(normalized_phase, PHASE_STYLE_OVERRIDES[PHASE_BODY]))
-        # Preserve explicit per-line guidance when it is already structured.
-        merged.update(parsed_fields)
-        rendered = _render_instruction_fields(merged, extras)
-        if rendered:
-            return rendered
-        return DEFAULT_HOST2_INSTR if str(role or "").strip() == "Host2" else DEFAULT_HOST1_INSTR
+        cleaned = _clean_instruction_text(instructions)
+        fallback = _default_instructions_for_role(role)
+        if not cleaned:
+            cleaned = fallback
+        legacy_reason = _instruction_legacy_reason(cleaned)
+        if legacy_reason:
+            cleaned = fallback
+        if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+            cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+        if _instruction_sentence_count(cleaned) > 2:
+            cleaned = fallback
+        if _looks_ambiguous_instruction(cleaned) or not _has_actionable_instruction_detail(cleaned):
+            cleaned = fallback
+
+        speed_value = _clamp_tts_speed(speed, fallback=self.config.tts_speed_default)
+        lower = cleaned.lower()
+        if speed_value >= 1.1 and any(token in lower for token in SLOW_CADENCE_HINTS):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, SLOW_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = (
+                f"{cleaned} Keep delivery clear and moderately brisk without sounding rushed."
+            )
+        elif speed_value <= 0.95 and any(token in lower for token in FAST_CADENCE_HINTS):
+            cleaned = _remove_conflicting_cadence_hints(cleaned, FAST_CADENCE_HINTS)
+            if not cleaned:
+                cleaned = fallback
+            cleaned = f"{cleaned} Keep delivery calm and steady with clear articulation."
+
+        overlay = PHASE_INSTRUCTION_OVERLAYS.get(normalized_phase, PHASE_INSTRUCTION_OVERLAYS[PHASE_BODY])
+        if overlay.lower() not in cleaned.lower():
+            cleaned = f"{cleaned} {overlay}"
+        cleaned = _clean_instruction_text(cleaned)
+        if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+            cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+        if not cleaned:
+            return _clean_instruction_text(f"{fallback} {overlay}")
+        return cleaned
 
     def _phase_speed_metrics(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Compute phase and speed statistics from manifest segments."""
@@ -505,13 +586,14 @@ class TTSSynthesizer:
                 line_index=valid_line_position,
                 total_lines=total_valid_lines,
             )
+            speed = self._speed_for_phase(phase)
             instructions = self._refine_instructions_for_phase(
                 instructions=instructions,
                 role=role,
                 phase=phase,
+                speed=speed,
             )
             voice = voice_for(role or speaker, speaker_name=speaker, role_speakers=role_speakers)
-            speed = self._speed_for_phase(phase)
             parts = split_text_for_tts(text, self.config.tts_max_chars_per_segment)
             for part in parts:
                 idx += 1

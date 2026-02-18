@@ -5,12 +5,49 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from typing import Any, Dict, List
 
-DEFAULT_INSTRUCTIONS = (
-    "Voice Affect: Warm and confident | Tone: Conversational | "
-    "Pacing: Measured | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief"
+DEFAULT_HOST1_INSTRUCTIONS = (
+    "Speak in a warm, confident, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
+)
+DEFAULT_HOST2_INSTRUCTIONS = (
+    "Speak in a bright, friendly, conversational tone. "
+    "Keep pacing measured and clear with brief pauses."
+)
+DEFAULT_INSTRUCTIONS = DEFAULT_HOST1_INSTRUCTIONS
+MAX_INSTRUCTIONS_CHARS = 220
+LEGACY_INSTRUCTION_MARKERS = (
+    "voice affect:",
+    "tone:",
+    "pacing:",
+    "emotion:",
+    "pronunciation:",
+    "pauses:",
+)
+AMBIGUOUS_INSTRUCTION_PHRASES = (
+    "speak naturally",
+    "do your best",
+    "good voice",
+)
+ACTIONABLE_INSTRUCTION_HINTS = (
+    "tone",
+    "pacing",
+    "pace",
+    "clarity",
+    "clear",
+    "pronounce",
+    "pronunciation",
+    "warm",
+    "friendly",
+    "confident",
+    "analytical",
+    "inviting",
+    "energetic",
+    "appreciative",
+    "delivery",
+    "cadence",
+    "pause",
 )
 
 
@@ -45,7 +82,105 @@ def load_json_text(text: str) -> Dict[str, Any]:
     return value
 
 
-def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
+def _default_instructions_for_role(role: str) -> str:
+    """Return deterministic default instruction text for host role."""
+    if str(role or "").strip() == "Host2":
+        return DEFAULT_HOST2_INSTRUCTIONS
+    return DEFAULT_HOST1_INSTRUCTIONS
+
+
+def _normalize_instruction_whitespace(value: str) -> str:
+    """Collapse whitespace into single spaces without regex-heavy parsing."""
+    return " ".join(str(value or "").strip().split())
+
+
+def _legacy_instruction_reason(instructions: str) -> str:
+    """Return reason if instruction appears to use deprecated legacy template."""
+    lowered = str(instructions or "").strip().lower()
+    if not lowered:
+        return ""
+    if "|" in lowered:
+        return "contains legacy field separator '|'"
+    for marker in LEGACY_INSTRUCTION_MARKERS:
+        if marker in lowered:
+            return f"contains legacy marker '{marker}'"
+    return ""
+
+
+def _sentence_count(text: str) -> int:
+    """Count coarse sentence boundaries using simple punctuation checks."""
+    count = 0
+    in_sentence = False
+    for ch in str(text or ""):
+        if ch.strip():
+            in_sentence = True
+        if ch in ".!?" and in_sentence:
+            count += 1
+            in_sentence = False
+    if in_sentence:
+        count += 1
+    return count
+
+
+def _has_actionable_instruction_detail(text: str) -> bool:
+    """Heuristic check: instruction should include delivery/tone details."""
+    lowered = str(text or "").lower()
+    return any(token in lowered for token in ACTIONABLE_INSTRUCTION_HINTS)
+
+
+def _looks_ambiguous_instruction(text: str) -> bool:
+    """Detect vague template-like instructions lacking concrete guidance."""
+    lowered = str(text or "").lower()
+    if not lowered:
+        return True
+    for phrase in AMBIGUOUS_INSTRUCTION_PHRASES:
+        if phrase in lowered and not _has_actionable_instruction_detail(lowered):
+            return True
+    return False
+
+
+def _normalize_instructions_for_line(
+    *,
+    instructions: str,
+    role: str,
+    idx: int,
+    reject_legacy_instructions: bool = False,
+) -> str:
+    """Normalize instruction string and enforce hard-cut contract semantics."""
+    cleaned = _normalize_instruction_whitespace(instructions)
+    if not cleaned:
+        return _default_instructions_for_role(role)
+
+    legacy_reason = _legacy_instruction_reason(cleaned)
+    if legacy_reason:
+        if reject_legacy_instructions:
+            raise ValueError(
+                f"line[{idx}] instructions use deprecated legacy format ({legacy_reason}); "
+                "regenerate script artifacts with OpenAI-style instructions"
+            )
+        return _default_instructions_for_role(role)
+
+    if len(cleaned) > MAX_INSTRUCTIONS_CHARS:
+        cleaned = cleaned[:MAX_INSTRUCTIONS_CHARS].rstrip()
+
+    if _sentence_count(cleaned) > 2:
+        return _default_instructions_for_role(role)
+
+    if _looks_ambiguous_instruction(cleaned):
+        return _default_instructions_for_role(role)
+
+    if not _has_actionable_instruction_detail(cleaned):
+        return _default_instructions_for_role(role)
+
+    return cleaned
+
+
+def normalize_line(
+    raw: Dict[str, Any],
+    idx: int,
+    *,
+    reject_legacy_instructions: bool = False,
+) -> Dict[str, str]:
     """Normalize one dialogue line into canonical schema fields."""
     speaker = str(raw.get("speaker", "")).strip()
     role = str(raw.get("role", "")).strip()
@@ -59,10 +194,12 @@ def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
         role = "Host1" if idx % 2 == 0 else "Host2"
     if not text:
         raise ValueError(f"line[{idx}] missing text")
-    if not instructions:
-        # Keep a single-line format expected by TTS.
-        instructions = DEFAULT_INSTRUCTIONS
-    instructions = re.sub(r"\s+", " ", instructions).strip()
+    instructions = _normalize_instructions_for_line(
+        instructions=instructions,
+        role=role,
+        idx=idx,
+        reject_legacy_instructions=reject_legacy_instructions,
+    )
     return {
         "speaker": speaker,
         "role": role,
@@ -71,7 +208,11 @@ def normalize_line(raw: Dict[str, Any], idx: int) -> Dict[str, str]:
     }
 
 
-def validate_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+def validate_script_payload(
+    payload: Dict[str, Any],
+    *,
+    reject_legacy_instructions: bool = False,
+) -> Dict[str, List[Dict[str, str]]]:
     """Validate/normalize payload and ensure non-empty `lines` list."""
     lines = payload.get("lines", [])
     if not isinstance(lines, list):
@@ -80,7 +221,13 @@ def validate_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str,
     for idx, item in enumerate(lines):
         if not isinstance(item, dict):
             raise ValueError(f"line[{idx}] must be object")
-        out.append(normalize_line(item, idx))
+        out.append(
+            normalize_line(
+                item,
+                idx,
+                reject_legacy_instructions=reject_legacy_instructions,
+            )
+        )
     if not out:
         raise ValueError("script has no lines")
     return {"lines": out}
@@ -149,7 +296,11 @@ def _extract_candidate_lines(payload: Dict[str, Any]) -> List[Any]:
     return candidates
 
 
-def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+def salvage_script_payload(
+    payload: Dict[str, Any],
+    *,
+    reject_legacy_instructions: bool = False,
+) -> Dict[str, List[Dict[str, str]]]:
     """Best-effort salvage of malformed payload into canonical `lines`."""
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
@@ -202,12 +353,16 @@ def salvage_script_payload(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, 
             role = "Host1" if len(out) % 2 == 0 else "Host2"
         if not speaker:
             speaker = "Host One" if role == "Host1" else "Host Two"
-        if not instructions:
-            instructions = DEFAULT_INSTRUCTIONS
+        instructions = _normalize_instructions_for_line(
+            instructions=instructions,
+            role=role,
+            idx=idx,
+            reject_legacy_instructions=reject_legacy_instructions,
+        )
         normalized = {
             "speaker": speaker,
             "role": role,
-            "instructions": re.sub(r"\s+", " ", instructions).strip(),
+            "instructions": instructions,
             "text": text,
         }
         key = dedupe_key(normalized)

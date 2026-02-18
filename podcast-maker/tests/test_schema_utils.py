@@ -34,11 +34,39 @@ class SchemaUtilsTests(unittest.TestCase):
         self.assertEqual(line0["role"], "Host1")
         self.assertEqual(line1["role"], "Host2")
 
-    def test_normalize_line_missing_instructions_gets_default_single_line(self) -> None:
+    def test_normalize_line_missing_instructions_gets_default_openai_style(self) -> None:
         line = normalize_line({"speaker": "Ana", "role": "Host1", "text": "hola"}, 0)
-        self.assertIn("Voice Affect:", line["instructions"])
+        self.assertIn("Speak in a warm, confident, conversational tone.", line["instructions"])
         self.assertNotIn("\n", line["instructions"])
-        self.assertIn("|", line["instructions"])
+        self.assertNotIn("|", line["instructions"])
+
+    def test_normalize_line_rejects_legacy_instruction_template(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_line(
+                {
+                    "speaker": "Ana",
+                    "role": "Host1",
+                    "instructions": "Voice Affect: Warm | Tone: Conversational",
+                    "text": "hola",
+                },
+                0,
+                reject_legacy_instructions=True,
+            )
+
+    def test_normalize_line_falls_back_when_instruction_is_ambiguous(self) -> None:
+        line = normalize_line(
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Speak naturally.",
+                "text": "hola",
+            },
+            0,
+        )
+        self.assertEqual(
+            line["instructions"],
+            "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
+        )
 
     def test_validate_script_payload_rejects_empty(self) -> None:
         with self.assertRaises(ValueError):

@@ -3,61 +3,61 @@
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Hoy exploramos un tema central con contexto practico para equipos pequenos."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Primero definimos objetivos medibles y limitamos alcance para reducir riesgos."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Despues abordamos preparacion de datos, calidad y trazabilidad de cambios."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Tambien explicamos como validar hipotesis con pruebas pequenas y rapidas."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En la mitad del proceso conviene revisar costo, plazo y restricciones tecnicas."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Si algo falla, iteramos con una mejora acotada y medimos otra vez."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Con esa disciplina evitamos retrabajo y mantenemos alineacion con negocio."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "En Resumen: foco claro, validacion continua y decisiones con evidencia."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
-      "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Gracias por escucharnos, esperamos que este marco te sea util."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
-      "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
+      "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
       "text": "Nos vemos en el proximo episodio."
     }
   ]

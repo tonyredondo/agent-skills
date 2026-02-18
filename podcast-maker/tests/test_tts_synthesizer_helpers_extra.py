@@ -43,7 +43,8 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         lines = [{"speaker": "Ana", "role": "Host2", "instructions": "", "text": "hola mundo desde aqui"}]
         segments = self.synth._build_segments(lines)
         self.assertGreaterEqual(len(segments), 1)
-        self.assertIn("Voice Affect:", segments[0]["instructions"])
+        self.assertIn("Speak in a bright, friendly, conversational tone.", segments[0]["instructions"])
+        self.assertNotIn("|", segments[0]["instructions"])
         self.assertEqual(segments[0]["voice"], "marin")
 
     def test_build_segments_assigns_voice_from_speaker_name_hints(self) -> None:
@@ -112,10 +113,11 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         self.assertEqual(segments[0]["speed"], self.cfg.tts_speed_intro)
         self.assertEqual(segments[-1]["phase"], "closing")
         self.assertEqual(segments[-1]["speed"], self.cfg.tts_speed_closing)
-        self.assertIn("Tone:", segments[0]["instructions"])
+        self.assertIn("Speak in a warm, confident, conversational tone.", segments[0]["instructions"])
+        self.assertIn("For this intro segment", segments[0]["instructions"])
         self.assertNotIn(" x ", f" {segments[0]['instructions']} ")
 
-    def test_build_segments_preserves_structured_custom_instruction_fields(self) -> None:
+    def test_build_segments_replaces_legacy_structured_instruction_format(self) -> None:
         lines = [
             {
                 "speaker": "Ana",
@@ -129,9 +131,9 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
         ]
         segments = self.synth._build_segments(lines)
         instructions = segments[0]["instructions"]
-        self.assertIn("Tone: Formal y pausado", instructions)
-        self.assertIn("Pacing: Lento", instructions)
-        self.assertIn("Emotion: Calma", instructions)
+        self.assertNotIn("Tone: Formal y pausado", instructions)
+        self.assertNotIn("|", instructions)
+        self.assertIn("Speak in a warm, confident, conversational tone.", instructions)
 
     def test_build_segments_guarantees_intro_and_closing_for_short_valid_scripts(self) -> None:
         lines = [

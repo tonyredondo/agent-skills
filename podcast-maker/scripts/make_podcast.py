@@ -20,6 +20,7 @@ import uuid
 from pipeline.audio_mixer import AudioMixer
 from pipeline.config import AudioConfig, LoggingConfig, ReliabilityConfig, ScriptConfig
 from pipeline.errors import (
+    ERROR_KIND_INVALID_SCHEMA,
     ERROR_KIND_INTERRUPTED,
     ERROR_KIND_NETWORK,
     ERROR_KIND_RATE_LIMIT,
@@ -423,7 +424,23 @@ def main(argv: list[str] | None = None) -> int:
         # Validate and normalize script structure before any audio work starts.
         with open(args.script_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
-        validated = validate_script_payload(payload)
+        try:
+            validated = validate_script_payload(payload, reject_legacy_instructions=True)
+        except ValueError as exc:
+            message = str(exc)
+            if "deprecated legacy format" in message.lower():
+                logger.warn(
+                    "legacy_script_instructions_detected_regenerating",
+                    script_path=args.script_path,
+                )
+                # Regenerate normalized instructions from the provided source
+                # payload instead of processing legacy template strings.
+                validated = validate_script_payload(payload)
+            else:
+                raise ScriptOperationError(
+                    f"Script schema validation failed before audio stage: {message}",
+                    error_kind=ERROR_KIND_INVALID_SCHEMA,
+                ) from exc
         hardened_lines = harden_script_structure(
             list(validated.get("lines", [])),
             max_consecutive_same_speaker=quality_cfg.max_consecutive_same_speaker,
