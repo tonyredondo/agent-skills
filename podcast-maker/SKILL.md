@@ -164,7 +164,7 @@ Useful env vars:
 - `SCRIPT_PRE_SUMMARY_MAX_ROUNDS`
 - `SCRIPT_PRESUMMARY_PARALLEL=0|1`, `SCRIPT_PRESUMMARY_PARALLEL_WORKERS`
 - `SCRIPT_MAX_CONTEXT_LINES`, `SCRIPT_NO_PROGRESS_ROUNDS`, `SCRIPT_MIN_WORD_DELTA`
-- `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` (default `0.75`; prevents premature max-word early-stop when multi-topic coverage is still narrow)
+- `SCRIPT_TOPIC_COVERAGE_MIN_RATIO` (default `0.85`; prevents premature max-word early-stop when multi-topic coverage is still narrow)
 - `SCRIPT_REPAIR_MAX_ATTEMPTS`
 - `SCRIPT_PARSE_REPAIR_ATTEMPTS` (base parse-repair attempts, default `2`)
 - `SCRIPT_PARSE_REPAIR_TRUNCATION_BONUS_ATTEMPTS` (extra attempts for likely truncation, default `2`)

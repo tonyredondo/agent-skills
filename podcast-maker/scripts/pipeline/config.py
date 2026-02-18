@@ -52,7 +52,10 @@ def _env_bool(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
         return default
-    return v.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = str(v).strip().lower()
+    if normalized == "":
+        return default
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _coalesce(value: Any, fallback: Any) -> Any:

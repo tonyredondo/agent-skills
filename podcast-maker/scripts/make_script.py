@@ -97,7 +97,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    normalized = str(raw).strip().lower()
+    if normalized == "":
+        return default
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _episode_id_arg(value: str) -> str:
@@ -854,10 +857,11 @@ def main(argv: list[str] | None = None) -> int:
                 applied_repair = bool(final_lines) and (
                     bool(repair_result.get("repaired", False)) or final_lines != initial_lines_for_gate
                 )
+                persist_repaired_lines = applied_repair and final_completeness_pass
                 gate_passed = bool(quality_report.get("pass", False)) and final_completeness_pass
                 gate_enforce_failed = script_gate_action == "enforce" and not gate_passed
                 quality_stage_finished = True
-                if applied_repair:
+                if persist_repaired_lines:
                     # Persist repaired script and synchronize checkpoint/summary
                     # so resume keeps using the corrected content.
                     _atomic_write_json(result.output_path, {"lines": final_lines})
@@ -877,7 +881,13 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     result.line_count = len(final_lines)
                     result.word_count = count_words_from_lines(final_lines)
-                elif gate_enforce_failed:
+                elif applied_repair and not final_completeness_pass:
+                    logger.warn(
+                        "script_quality_repair_discarded_incomplete_candidate",
+                        output_path=result.output_path,
+                        reasons=list(quality_report.get("reasons", [])),
+                    )
+                if gate_enforce_failed and not persist_repaired_lines:
                     # Keep status consistent when quality gate fails after generation.
                     _sync_script_artifacts_after_repair(
                         checkpoint_path=result.checkpoint_path,

@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import os
 import sys
 import tempfile
@@ -265,6 +266,32 @@ class TTSSynthesizerHelpersExtraTests(unittest.TestCase):
             path = os.path.join(tmp, "pause.mp3")
             with mock.patch("pipeline.tts_synthesizer.shutil.which", return_value=None):
                 self.assertFalse(self.synth._create_pause_file(path, 100))
+
+    def test_write_json_atomic_replaces_existing_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = os.path.join(tmp, "run_summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "old", "value": 1}, f)
+            self.synth._write_json_atomic(summary_path, {"status": "new", "value": 2})
+            with open(summary_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self.assertEqual(payload.get("status"), "new")
+            self.assertEqual(payload.get("value"), 2)
+
+    def test_write_json_atomic_keeps_previous_file_on_dump_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = os.path.join(tmp, "run_summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "old", "value": 1}, f)
+            with mock.patch("pipeline.tts_synthesizer.json.dump", side_effect=RuntimeError("dump failed")):
+                with self.assertRaises(RuntimeError):
+                    self.synth._write_json_atomic(summary_path, {"status": "new"})
+            with open(summary_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self.assertEqual(payload.get("status"), "old")
+            self.assertEqual(payload.get("value"), 1)
+            tmp_files = [name for name in os.listdir(tmp) if name.startswith("run_summary.json.") and name.endswith(".tmp")]
+            self.assertEqual(tmp_files, [])
 
 
 if __name__ == "__main__":
