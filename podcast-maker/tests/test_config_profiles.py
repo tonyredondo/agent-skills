@@ -50,6 +50,26 @@ class ConfigProfilesTests(unittest.TestCase):
         self.assertEqual(cfg.target_minutes, 6.0)
         self.assertEqual(cfg.words_per_min, 110.0)
 
+    def test_script_config_default_model_is_gpt_5_4(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = ScriptConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.model, "gpt-5.4")
+        self.assertEqual(cfg.profile_name, "short")
+
+    def test_script_config_uses_model_env_when_script_model_unset(self) -> None:
+        with mock.patch.dict(os.environ, {"MODEL": "gpt-test-shared"}, clear=True):
+            cfg = ScriptConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.model, "gpt-test-shared")
+
+    def test_script_config_prefers_script_model_over_model_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"SCRIPT_MODEL": "gpt-script-override", "MODEL": "gpt-fallback"},
+            clear=True,
+        ):
+            cfg = ScriptConfig.from_env(profile_name="short")
+        self.assertEqual(cfg.model, "gpt-script-override")
+
     def test_audio_config_profile_drives_default_concurrency(self) -> None:
         short_cfg = AudioConfig.from_env(profile_name="short")
         long_cfg = AudioConfig.from_env(profile_name="long")
@@ -147,4 +167,3 @@ class ConfigProfilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

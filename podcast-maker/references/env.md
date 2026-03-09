@@ -1,22 +1,35 @@
 # Podcast Maker Environment Reference
 
-This document is the single reference for runtime env vars and defaults used by:
+This document is the canonical reference for runtime environment variables and defaults used by:
 
-- `scripts/pipeline/config.py` (`LoggingConfig`, `ReliabilityConfig`, `ScriptConfig`, `AudioConfig`)
-- `scripts/pipeline/script_quality_gate_config.py` (`ScriptQualityGateConfig`)
-- `scripts/make_script.py`, `scripts/make_podcast.py`, `scripts/run_podcast.py` (entrypoint-level controls)
+- `scripts/pipeline/config.py`
+- `scripts/pipeline/script_quality_gate_config.py`
+- `scripts/make_script.py`
+- `scripts/make_podcast.py`
+- `scripts/run_podcast.py`
 
 If this file and code diverge, code is the source of truth and this file must be updated.
+
+## Contents
+
+- Gate action resolution
+- Core runtime
+- Script generation
+- OpenAI client runtime
+- Audio synthesis and mixing
+- Script quality gate
+- Entrypoint runtime controls
+- Artifact paths
 
 ## Gate Action Resolution
 
 `SCRIPT_QUALITY_GATE_SCRIPT_ACTION` / `SCRIPT_QUALITY_GATE_ACTION` are resolved by `scripts/pipeline/gate_action.py`:
 
 1. `SCRIPT_QUALITY_GATE_SCRIPT_ACTION` if valid (`off|warn|enforce`)
-2. else `SCRIPT_QUALITY_GATE_ACTION` if set and valid
-3. else gate-profile default (`default=warn`, `production_strict=enforce`)
+2. Else `SCRIPT_QUALITY_GATE_ACTION` if set and valid
+3. Else gate-profile default (`default=warn`, `production_strict=enforce`)
 
-## Core Runtime (config.py)
+## Core Runtime (`config.py`)
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -36,11 +49,11 @@ If this file and code diverge, code is the source of truth and this file must be
 | `RETENTION_LOG_DAYS` | `7` | Cleanup policy |
 | `RETENTION_INTERMEDIATE_AUDIO_DAYS` | `3` | Cleanup policy |
 
-## Script Generation (config.py)
+## Script Generation (`config.py`)
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `SCRIPT_MODEL` / `MODEL` | `gpt-5.2` | Script model |
+| `SCRIPT_MODEL` / `MODEL` | `gpt-5.4` | Script model |
 | `PODCAST_DURATION_PROFILE` | `standard` | `short|standard|long` |
 | `TARGET_MINUTES` | profile default | `short=5`, `standard=15`, `long=30` |
 | `WORDS_PER_MIN` | `130.0` | Target WPM |
@@ -75,14 +88,14 @@ Profile source-validation defaults:
 - `standard`: `enforce`, warn ratio `0.50`, enforce ratio `0.35`
 - `long`: `enforce`, warn ratio `0.60`, enforce ratio `0.45`
 
-## OpenAI Client Runtime (openai_client.py)
+## OpenAI Client Runtime (`openai_client.py`)
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `SCRIPT_REASONING_EFFORT` | `low` | Base reasoning effort for script requests |
 | `SCRIPT_QUALITY_EVAL_REASONING_EFFORT` | `high` | Stage override for `script_quality_eval` freeform call |
 
-## Audio Synthesis/Mix (config.py)
+## Audio Synthesis And Mixing (`config.py`)
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -113,12 +126,13 @@ Profile source-validation defaults:
 | `TTS_SPEED_HINTS_ENABLED` | `1` | Enables optional LLM `pace_hint` (`calm|steady|brisk`) |
 | `TTS_SPEED_HINTS_MAX_DELTA` | `0.08` | Max per-segment smoothing delta when hints are enabled |
 
-`TTS_SPEED_HINTS_ENABLED` / `TTS_SPEED_HINTS_MAX_DELTA` are treated as runtime tuning knobs:
-- they do not invalidate audio resume fingerprints;
-- mismatches on resume are tolerated (warning + continue);
-- hint/smoothing failures fall back to `speed=1.0` without aborting the pipeline.
+`TTS_SPEED_HINTS_ENABLED` / `TTS_SPEED_HINTS_MAX_DELTA` are runtime tuning knobs:
 
-## Script Quality Gate (script_quality_gate_config.py)
+- they do not invalidate audio resume fingerprints
+- resume mismatches are tolerated with warning plus continue
+- hint or smoothing failures fall back to `speed=1.0` without aborting the pipeline
+
+## Script Quality Gate (`script_quality_gate_config.py`)
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -136,14 +150,14 @@ Profile source-validation defaults:
 | `SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER` | profile default | Max same-speaker run |
 | `SCRIPT_QUALITY_MAX_REPEAT_LINE_RATIO` | profile default | Repetition threshold |
 | `SCRIPT_QUALITY_MAX_TURN_WORDS` | `58` | Line-length threshold per spoken turn |
-| `SCRIPT_QUALITY_MAX_LONG_TURN_COUNT` | `3` | Allowed turns above line-length threshold |
+| `SCRIPT_QUALITY_MAX_LONG_TURN_COUNT` | `3` | Allowed turns above threshold |
 | `SCRIPT_QUALITY_MAX_QUESTION_RATIO` | `0.45` | Maximum question-line ratio |
 | `SCRIPT_QUALITY_MAX_QUESTION_STREAK` | `2` | Max consecutive question turns |
-| `SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS` | `2` | Allowed abrupt transition count (for longer scripts) |
-| `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED` | `1` | Enables source-aware topic balance check (script-stage) |
+| `SCRIPT_QUALITY_MAX_ABRUPT_TRANSITIONS` | `2` | Allowed abrupt transition count |
+| `SCRIPT_QUALITY_SOURCE_BALANCE_ENABLED` | `1` | Enables source-aware topic balance check |
 | `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE` | `0.6` | Minimum covered source-category ratio |
-| `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE` | `0.65` | Maximum concentration allowed in one source category |
-| `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS` | `4` | Minimum lexical overlap hits to mark source-balance as applicable |
+| `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE` | `0.65` | Maximum concentration allowed in one category |
+| `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS` | `4` | Minimum lexical overlap hits |
 | `SCRIPT_QUALITY_REQUIRE_SUMMARY` | `1` | Require summary signal |
 | `SCRIPT_QUALITY_REQUIRE_CLOSING` | `1` | Require closing signal |
 | `SCRIPT_QUALITY_MIN_OVERALL_SCORE` | profile default | LLM score guard |
@@ -171,7 +185,7 @@ Profile source-validation defaults:
 
 | Variable | Default | Entrypoint | Notes |
 | --- | --- | --- | --- |
-| `RUN_MANIFEST_V2` | `1` | `make_script.py`, `make_podcast.py` | Manifest/pipeline summary flow |
+| `RUN_MANIFEST_V2` | `1` | `make_script.py`, `make_podcast.py` | Manifest and pipeline summary flow |
 | `SCRIPT_COMPLETENESS_CHECK_V2` | `1` | `make_script.py`, `make_podcast.py` | Pre-gate completeness check |
 | `SCRIPT_ORCHESTRATED_RETRY_ENABLED` | `1` | `make_script.py` | Enables orchestrated retries |
 | `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_script.py` | Max orchestrated attempts |
@@ -183,13 +197,18 @@ Profile source-validation defaults:
 | `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_podcast.py` | Max orchestrated attempts |
 | `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` | `1200` | `make_podcast.py` | Retry backoff |
 | `AUDIO_ORCHESTRATED_RETRY_FAILURE_KINDS` | `timeout,network,rate_limit` | `make_podcast.py` | Recoverable failure kinds |
-| `ALLOW_RAW_ONLY` | `0` | `make_podcast.py` | Raw-only fallback when ffmpeg missing |
+| `ALLOW_RAW_ONLY` | `0` | `make_podcast.py` | Raw-only fallback when ffmpeg is missing |
 | `RUN_PODCAST_SCRIPT_ATTEMPTS` | `1` | `run_podcast.py` | Script-stage attempts in orchestrator |
 
-## Artifact Paths (Quality Reports)
+## Artifact Paths
 
 - Script stage (`make_script.py`):
   - `<script_checkpoint_dir>/<episode>/quality_report_initial.json`
   - `<script_checkpoint_dir>/<episode>/quality_report.json`
+  - `<script_checkpoint_dir>/<episode>/run_manifest.json`
+  - `<script_checkpoint_dir>/<episode>/pipeline_summary.json`
 - Audio stage (`make_podcast.py`):
   - `<audio_checkpoint_dir>/<episode>/quality_report.json`
+  - `<audio_checkpoint_dir>/<episode>/normalized_script.json`
+  - `<audio_checkpoint_dir>/<episode>/audio_manifest.json`
+  - `<audio_checkpoint_dir>/<episode>/podcast_run_summary.json`

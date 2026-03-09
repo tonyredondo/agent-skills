@@ -318,7 +318,7 @@ class ScriptConfig:
             source_validation_enforce_ratio = source_validation_warn_ratio
 
         return ScriptConfig(
-            model=_env_str("SCRIPT_MODEL", _env_str("MODEL", "gpt-5.2")),
+            model=_env_str("SCRIPT_MODEL", _env_str("MODEL", "gpt-5.4")),
             profile_name=profile.name,
             target_minutes=resolved_target,
             words_per_min=resolved_wpm,
@@ -493,4 +493,3 @@ def config_fingerprint(
     if extra:
         payload["extra"] = extra
     return fingerprint_dict(payload)
-

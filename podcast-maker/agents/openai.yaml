@@ -1,0 +1,4 @@
+interface:
+  display_name: "Podcast Maker"
+  short_description: "Turn source text into a two-host podcast script and MP3 episode."
+  default_prompt: "Create a two-host podcast episode from the provided source text using the bundled script-plus-audio pipeline, and keep script and audio generation resumable."
