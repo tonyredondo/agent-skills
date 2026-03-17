@@ -41,7 +41,7 @@ class _FakeScriptClient:
                     "speaker": "Luis",
                     "role": "Host2",
                     "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
-                    "text": f"Seguimos con ejemplos concretos en el bloque {self._seq} para mantener claridad y utilidad.",
+                    "text": f"Vale, aterriza el bloque {self._seq}: donde baja coste y donde aparece el tradeoff operativo.",
                 },
             ]
         }
@@ -98,8 +98,25 @@ class GoldenPipelineE2ETests(unittest.TestCase):
             with open(candidate_path, "r", encoding="utf-8") as f:
                 candidate_payload = json.load(f)
 
+            candidate_metrics = compute_script_metrics(candidate_payload)
+            self.assertGreaterEqual(candidate_metrics.host2_turn_ratio, 0.3)
+            self.assertGreaterEqual(candidate_metrics.host2_push_ratio, 0.2)
+            self.assertTrue(candidate_metrics.meta_language_ok)
+            self.assertLessEqual(candidate_metrics.scaffold_phrase_hits, 1)
+
             baseline_path = os.path.join(tmp, "baseline_metrics.json")
-            baseline = {"e2e_case": compute_script_metrics(candidate_payload).to_dict()}
+            baseline = {
+                "e2e_case": {
+                    "line_count": candidate_metrics.line_count,
+                    "word_count": candidate_metrics.word_count,
+                    "unique_speakers": 2,
+                    "alternating_ratio": 0.8,
+                    "host2_turn_ratio": 0.3,
+                    "host2_push_ratio": 0.2,
+                    "scaffold_phrase_hits": 0,
+                    "meta_language_ok": True,
+                }
+            }
             with open(baseline_path, "w", encoding="utf-8") as f:
                 json.dump(baseline, f, ensure_ascii=False, indent=2, sort_keys=True)
                 f.write("\n")

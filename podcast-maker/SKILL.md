@@ -58,7 +58,7 @@ If you split script and audio generation across separate commands, pass the same
 | Need | Command |
 | --- | --- |
 | Normal end-to-end generation with shared run identity | `python3 ./scripts/run_podcast.py` |
-| Generate or repair only the script JSON | `./scripts/make_script.py` |
+| Generate only the script JSON | `./scripts/make_script.py` |
 | Regenerate audio from an existing script JSON | `./scripts/make_podcast.py` |
 
 Use only flags documented in each script's `--help`.
@@ -71,19 +71,21 @@ Use only flags documented in each script's `--help`.
   - `standard`: prefer at least `max(120, target_words * 0.50)` words
   - `long`: prefer at least `max(120, target_words * 0.60)` words
 - Script generation defaults to `gpt-5.4` and still honors `SCRIPT_MODEL` / `MODEL` overrides
+- `make_script.py` is expected to persist `quality_report.json`; if that artifact is missing, the script run fails instead of triggering a hidden fallback repair/eval path
 - Audio generation performs a pre-TTS script quality check and can run in `off`, `warn`, or `enforce` mode
 - Resume is supported for both script and audio stages
 
 ## Script Expectations
 
-When prompting or repairing scripts, keep these constraints in force:
+When generating or reviewing scripts, keep these constraints in force:
 
 - spoken text should alternate `Host1` and `Host2`
 - avoid explicit section labels like `Bloque 1`, `Section 2`, or `Part 3`
 - avoid internal workflow disclosures, shell commands, or document-meta narration in spoken lines
-- keep the ending complete: coherent recap plus farewell, no dangling connectors or clipped endings
+- keep the ending complete and natural: no dangling connectors or clipped endings, and no forced recap/farewell formulas unless the user explicitly asks for them
 - use natural phrasing in the target language and avoid repeated line openers
-- if the source covers multiple topics, open with a brief spoken roadmap and a clean pivot into topic one
+- make `Host2` genuinely interactive: ask for clarification, push on tradeoffs, or challenge vague claims instead of only agreeing
+- if the source covers multiple topics, move into topic one with a natural spoken transition instead of a forced roadmap
 
 Expected JSON shape:
 

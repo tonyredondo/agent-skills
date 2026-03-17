@@ -10,7 +10,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Revisamos particionado, ordering guarantees y manejo de duplicados en consumidores."
+      "text": "Por ejemplo, que coste pagas cuando fuerzas ordering total en una cola que crece rapido."
     },
     {
       "speaker": "Carlos",
@@ -22,7 +22,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Para resiliencia aplicamos retries con backoff, timeouts y circuit breakers acotados."
+      "text": "Entonces el tradeoff real no es resiliencia gratis, sino latencia frente a estabilidad."
     },
     {
       "speaker": "Carlos",
@@ -34,7 +34,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "La capa de datos exige migraciones seguras y versionado compatible de contratos."
+      "text": "Y que riesgo asumes si versionas contratos sin observar a los consumidores rezagados."
     },
     {
       "speaker": "Carlos",
@@ -46,19 +46,19 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En Resumen: diseno robusto requiere telemetria, control de fallos y pruebas de caos."
+      "text": "Si no mides esos bordes, el sistema parece robusto solo mientras todo va bien."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Gracias por escucharnos en este episodio tecnico."
+      "text": "Por eso la robustez real se juega en las rutas feas, no en la demo limpia."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Nos vemos en el proximo episodio."
+      "text": "Y ahi el detalle operativo pesa mas que cualquier arquitectura bonita."
     }
   ]
 }

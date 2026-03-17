@@ -952,6 +952,7 @@ class TTSSynthesizer:
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             return True
         if shutil.which("ffmpeg") is None:
+            self._pause_generation_degraded = True
             self.logger.warn("pause_generation_skipped_no_ffmpeg")
             return False
         duration_s = max(0.05, duration_ms / 1000.0)
@@ -975,6 +976,7 @@ class TTSSynthesizer:
         ]
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
         if proc.returncode != 0:
+            self._pause_generation_degraded = True
             self.logger.warn(
                 "pause_generation_failed",
                 returncode=proc.returncode,
@@ -1030,6 +1032,7 @@ class TTSSynthesizer:
         )
 
         try:
+            self._pause_generation_degraded = False
             def persist_manifest() -> None:
                 self._apply_phase_metrics_to_manifest(manifest)
                 manifest["manifest_checksum_sha256"] = self._manifest_checksum(manifest)
@@ -1480,6 +1483,7 @@ class TTSSynthesizer:
                 "speed_hint_resume_seed_missing_count": phase_metrics[
                     "speed_hint_resume_seed_missing_count"
                 ],
+                "pause_generation_degraded": bool(self._pause_generation_degraded),
             }
             if failed_segments:
                 # Aggregate failure kinds keeps orchestrator policy simple and
@@ -1582,6 +1586,7 @@ class TTSSynthesizer:
                     "tts_phase_counts": phase_metrics["phase_counts"],
                     "tts_speed_stats": phase_metrics["speed_stats"],
                     "tts_phase_speed_stats": phase_metrics["phase_speed_stats"],
+                    "pause_generation_degraded": bool(self._pause_generation_degraded),
                     # Keep stuck signal anchored to the current operation error, not historical kinds.
                     "stuck_abort": is_stuck_error_kind(current_failure_kind),
                 }
@@ -1605,6 +1610,7 @@ class TTSSynthesizer:
                     "requests_made": self.client.requests_made,
                     "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
                     "elapsed_seconds": round(time.time() - started, 2),
+                    "pause_generation_degraded": bool(self._pause_generation_degraded),
                 }
                 self._write_json_atomic(store.summary_path, summary)
             except Exception:

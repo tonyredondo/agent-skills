@@ -10,7 +10,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Primero definimos objetivos medibles y limitamos alcance para reducir riesgos."
+      "text": "Por ejemplo, si el objetivo es bajar retrabajo, que medida cambia en la primera semana."
     },
     {
       "speaker": "Carlos",
@@ -22,7 +22,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Tambien explicamos como validar hipotesis con pruebas pequenas y rapidas."
+      "text": "Que riesgo asumimos si medimos solo velocidad y no errores en produccion."
     },
     {
       "speaker": "Carlos",
@@ -34,7 +34,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Si algo falla, iteramos con una mejora acotada y medimos otra vez."
+      "text": "Entonces conviene iterar con una mejora pequena y volver a medir antes de escalar."
     },
     {
       "speaker": "Carlos",
@@ -46,19 +46,19 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En Resumen: foco claro, validacion continua y decisiones con evidencia."
+      "text": "Si ese bucle no aparece, la supuesta disciplina se queda en discurso."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Gracias por escucharnos, esperamos que este marco te sea util."
+      "text": "La prueba final es que el proceso siga siendo claro cuando entra alguien nuevo."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Nos vemos en el proximo episodio."
+      "text": "Y ahi es donde se nota si el metodo de verdad aguanta el uso diario."
     }
   ]
 }

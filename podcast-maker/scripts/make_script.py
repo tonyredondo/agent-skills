@@ -41,18 +41,9 @@ from pipeline.run_manifest import (
     run_manifest_path,
     update_manifest,
 )
-from pipeline.schema import count_words_from_lines, validate_script_payload
 from pipeline.script_generator import ScriptGenerator
-from pipeline.script_postprocess import (
-    evaluate_script_completeness,
-    harden_script_structure,
-    repair_script_completeness,
-)
 from pipeline.script_quality_gate import (
     ScriptQualityGateConfig,
-    attempt_script_quality_repair,
-    evaluate_script_quality,
-    write_quality_report,
 )
 from pipeline.slo_gates import append_slo_event, evaluate_slo_windows
 
@@ -114,8 +105,7 @@ def _episode_id_arg(value: str) -> str:
 
 
 def _default_script_gate_action(*, script_profile_name: str) -> str:
-    """Compatibility shim around centralized gate action defaults."""
-    # Backward-compatible alias kept for tests and external callers.
+    """Thin wrapper around centralized gate action defaults."""
     return default_script_gate_action(script_profile_name=script_profile_name)
 
 
@@ -204,60 +194,6 @@ def _atomic_write_json(path: str, payload: dict[str, object]) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
         f.write("\n")
     os.replace(tmp, path)
-
-
-def _sync_script_artifacts_after_repair(
-    *,
-    checkpoint_path: str,
-    run_summary_path: str,
-    repaired_lines: list[dict[str, str]] | None,
-    status: str,
-    failure_kind: str | None,
-    logger: Logger,
-) -> None:
-    """Keep checkpoint and run summary aligned after quality-stage repairs."""
-    now = int(time.time())
-    repaired_wc = count_words_from_lines(repaired_lines) if repaired_lines is not None else None
-    repaired_lc = len(repaired_lines) if repaired_lines is not None else None
-
-    if os.path.exists(checkpoint_path):
-        try:
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                checkpoint_payload = json.load(f)
-            if isinstance(checkpoint_payload, dict):
-                if repaired_lines is not None and repaired_wc is not None:
-                    checkpoint_payload["lines"] = repaired_lines
-                    checkpoint_payload["current_word_count"] = repaired_wc
-                checkpoint_payload["status"] = status
-                if status == "completed":
-                    checkpoint_payload["last_success_at"] = now
-                    checkpoint_payload["completed_at"] = now
-                    checkpoint_payload.pop("failed_at", None)
-                    checkpoint_payload.pop("failure_kind", None)
-                else:
-                    checkpoint_payload["failed_at"] = now
-                    if failure_kind:
-                        checkpoint_payload["failure_kind"] = failure_kind
-                _atomic_write_json(checkpoint_path, checkpoint_payload)
-        except Exception as exc:  # noqa: BLE001
-            logger.warn("script_quality_repair_checkpoint_sync_failed", error=str(exc), path=checkpoint_path)
-
-    if os.path.exists(run_summary_path):
-        try:
-            with open(run_summary_path, "r", encoding="utf-8") as f:
-                summary_payload = json.load(f)
-            if isinstance(summary_payload, dict):
-                if repaired_lc is not None and repaired_wc is not None:
-                    summary_payload["line_count"] = repaired_lc
-                    summary_payload["word_count"] = repaired_wc
-                summary_payload["status"] = status
-                if status == "completed":
-                    summary_payload.pop("failure_kind", None)
-                elif failure_kind:
-                    summary_payload["failure_kind"] = failure_kind
-                _atomic_write_json(run_summary_path, summary_payload)
-        except Exception as exc:  # noqa: BLE001
-            logger.warn("script_quality_repair_summary_sync_failed", error=str(exc), path=run_summary_path)
 
 
 def _sync_script_phase_metrics(
@@ -561,12 +497,12 @@ def main(argv: list[str] | None = None) -> int:
     invalid_schema = False
     stuck_abort = False
     estimated_cost_usd = 0.0
+    result = None
     failure_kind = None
     client = None
     quality_eval_seconds = 0.0
-    quality_repair_seconds = 0.0
     quality_report_path = ""
-    quality_report_initial_path = ""
+    script_quality_report_path = ""
     quality_stage_started = False
     quality_stage_finished = False
     quality_stage_interrupted = False
@@ -685,251 +621,31 @@ def main(argv: list[str] | None = None) -> int:
             fallback_action=gate_cfg.action,
         )
         script_gate_action_effective = script_gate_action
-        quality_gate_executed = script_gate_action in {"warn", "enforce"}
-        if script_gate_action in {"warn", "enforce"}:
-            # Script-stage quality gate can hard-fail (`enforce`) or emit
-            # warnings (`warn`) while still allowing downstream audio.
+        generator_quality_report_path = str(getattr(result, "quality_report_path", "") or "").strip()
+        if generator_quality_report_path and os.path.exists(generator_quality_report_path):
+            quality_gate_executed = True
             quality_stage_started = True
-            quality_report_path = os.path.join(
-                script_cfg.checkpoint_dir,
-                episode_id,
-                "quality_report.json",
+            quality_stage_finished = True
+            quality_report_path = generator_quality_report_path
+            script_quality_report_path = generator_quality_report_path
+            with open(generator_quality_report_path, "r", encoding="utf-8") as f:
+                generator_quality_report = json.load(f)
+            if not bool(generator_quality_report.get("pass", False)):
+                if script_gate_action == "enforce":
+                    raise ScriptOperationError(
+                        "Script quality gate rejected generated script",
+                        error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                    )
+                logger.warn(
+                    "script_quality_gate_warn_continue",
+                    report_path=generator_quality_report_path,
+                    reasons=generator_quality_report.get("reasons", []),
+                )
+        elif script_gate_action in {"warn", "enforce"}:
+            raise ScriptOperationError(
+                "Script generator completed without writing quality_report.json",
+                error_kind=ERROR_KIND_SCRIPT_QUALITY,
             )
-            quality_report_initial_path = os.path.join(
-                script_cfg.checkpoint_dir,
-                episode_id,
-                "quality_report_initial.json",
-            )
-            if not os.path.exists(result.output_path):
-                raise ScriptOperationError(
-                    "Script quality gate could not read generated output",
-                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
-                )
-            else:
-                with open(result.output_path, "r", encoding="utf-8") as f:
-                    generated_payload = json.load(f)
-                gate_cfg = dataclasses.replace(gate_cfg, action=script_gate_action)
-                validated_payload = validate_script_payload(generated_payload)
-                hardened_lines = harden_script_structure(
-                    list(validated_payload.get("lines", [])),
-                    max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
-                )
-                if completeness_v2_enabled:
-                    hardened_lines = repair_script_completeness(
-                        hardened_lines,
-                        max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
-                    )
-                    completeness_report = evaluate_script_completeness(hardened_lines)
-                    if not bool(completeness_report.get("pass", False)):
-                        raise ScriptOperationError(
-                            "Script completeness check failed before quality gate",
-                            error_kind=ERROR_KIND_SCRIPT_QUALITY,
-                        )
-                if hardened_lines != list(validated_payload.get("lines", [])):
-                    validated_payload = {"lines": hardened_lines}
-                    _atomic_write_json(result.output_path, validated_payload)
-                    logger.info(
-                        "script_structural_hardening_applied",
-                        output_path=result.output_path,
-                        lines=len(hardened_lines),
-                        words=count_words_from_lines(hardened_lines),
-                    )
-                initial_lines_for_gate = list(validated_payload.get("lines", []))
-                quality_eval_started = time.time()
-                quality_report_initial = evaluate_script_quality(
-                    validated_payload=validated_payload,
-                    script_cfg=script_cfg,
-                    quality_cfg=gate_cfg,
-                    script_path=result.output_path,
-                    client=client,
-                    logger=logger,
-                    source_context=source_text,
-                )
-                quality_eval_seconds = time.time() - quality_eval_started
-                quality_report_initial = dict(quality_report_initial)
-                quality_report_initial.update(
-                    {
-                        "quality_stage_started": True,
-                        "quality_stage_finished": False,
-                        "quality_stage_interrupted": False,
-                        "quality_report_phase": "initial",
-                        "quality_report_path": quality_report_path,
-                        "quality_report_initial_path": quality_report_initial_path,
-                    }
-                )
-                write_quality_report(quality_report_initial_path, quality_report_initial)
-
-                repair_total_timeout_seconds = max(
-                    1,
-                    _env_int("SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS", 300),
-                )
-                repair_attempt_timeout_seconds = max(
-                    1,
-                    _env_int(
-                        "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS",
-                        90,
-                    ),
-                )
-                quality_repair_started = time.time()
-                try:
-                    # Attempt deterministic and optional LLM-backed repair while
-                    # respecting cancellation and bounded repair deadlines.
-                    repair_result = attempt_script_quality_repair(
-                        validated_payload=validated_payload,
-                        initial_report=quality_report_initial,
-                        script_cfg=script_cfg,
-                        quality_cfg=gate_cfg,
-                        script_path=result.output_path,
-                        client=client,
-                        logger=logger,
-                        stage_prefix="script_gate_repair",
-                        cancel_check=lambda: shutdown["requested"],
-                        total_timeout_seconds=float(repair_total_timeout_seconds),
-                        attempt_timeout_seconds=repair_attempt_timeout_seconds,
-                        source_context=source_text,
-                    )
-                except InterruptedError:
-                    quality_repair_seconds = time.time() - quality_repair_started
-                    quality_stage_interrupted = True
-                    interrupted_report = dict(quality_report_initial)
-                    interrupted_reasons = list(interrupted_report.get("reasons", []))
-                    if "quality_stage_interrupted" not in interrupted_reasons:
-                        interrupted_reasons.append("quality_stage_interrupted")
-                    interrupted_report.update(
-                        {
-                            "status": "interrupted",
-                            "pass": False,
-                            "failure_kind": ERROR_KIND_INTERRUPTED,
-                            "reasons": interrupted_reasons,
-                            "quality_stage_started": True,
-                            "quality_stage_finished": False,
-                            "quality_stage_interrupted": True,
-                            "quality_report_phase": "interrupted",
-                            "quality_report_path": quality_report_path,
-                            "quality_report_initial_path": quality_report_initial_path,
-                        }
-                    )
-                    write_quality_report(quality_report_path, interrupted_report)
-                    _sync_script_artifacts_after_repair(
-                        checkpoint_path=result.checkpoint_path,
-                        run_summary_path=result.run_summary_path,
-                        repaired_lines=None,
-                        status="interrupted",
-                        failure_kind=ERROR_KIND_INTERRUPTED,
-                        logger=logger,
-                    )
-                    _sync_script_phase_metrics(
-                        run_summary_path=result.run_summary_path,
-                        phase_metrics={
-                            "quality_eval": quality_eval_seconds,
-                            "repair": quality_repair_seconds,
-                            "quality_repair": quality_repair_seconds,
-                        },
-                        logger=logger,
-                    )
-                    raise
-                quality_repair_seconds = time.time() - quality_repair_started
-                quality_report = dict(repair_result.get("report", quality_report_initial))
-                final_payload = repair_result.get("payload", validated_payload)
-                if not isinstance(final_payload, dict):
-                    final_payload = validated_payload
-                final_lines = list(final_payload.get("lines", [])) if isinstance(final_payload, dict) else []
-                final_completeness_pass = True
-                if final_lines:
-                    final_lines = harden_script_structure(
-                        final_lines,
-                        max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
-                    )
-                    if completeness_v2_enabled:
-                        final_lines = repair_script_completeness(
-                            final_lines,
-                            max_consecutive_same_speaker=gate_cfg.max_consecutive_same_speaker,
-                        )
-                        final_completeness = evaluate_script_completeness(final_lines)
-                        final_completeness_pass = bool(final_completeness.get("pass", False))
-                        if not final_completeness_pass:
-                            reasons = list(quality_report.get("reasons", []))
-                            for item in list(final_completeness.get("reasons", [])):
-                                if item not in reasons:
-                                    reasons.append(str(item))
-                            quality_report["reasons"] = reasons
-                            quality_report["pass"] = False
-                applied_repair = bool(final_lines) and (
-                    bool(repair_result.get("repaired", False)) or final_lines != initial_lines_for_gate
-                )
-                persist_repaired_lines = applied_repair and final_completeness_pass
-                gate_passed = bool(quality_report.get("pass", False)) and final_completeness_pass
-                gate_enforce_failed = script_gate_action == "enforce" and not gate_passed
-                quality_stage_finished = True
-                if persist_repaired_lines:
-                    # Persist repaired script and synchronize checkpoint/summary
-                    # so resume keeps using the corrected content.
-                    _atomic_write_json(result.output_path, {"lines": final_lines})
-                    logger.info(
-                        "script_quality_repair_applied",
-                        output_path=result.output_path,
-                        attempts=quality_report.get("repair_attempts_used", 0),
-                    )
-                    artifact_status = "failed" if gate_enforce_failed else "completed"
-                    _sync_script_artifacts_after_repair(
-                        checkpoint_path=result.checkpoint_path,
-                        run_summary_path=result.run_summary_path,
-                        repaired_lines=final_lines,
-                        status=artifact_status,
-                        failure_kind=ERROR_KIND_SCRIPT_QUALITY if gate_enforce_failed else None,
-                        logger=logger,
-                    )
-                    result.line_count = len(final_lines)
-                    result.word_count = count_words_from_lines(final_lines)
-                elif applied_repair and not final_completeness_pass:
-                    logger.warn(
-                        "script_quality_repair_discarded_incomplete_candidate",
-                        output_path=result.output_path,
-                        reasons=list(quality_report.get("reasons", [])),
-                    )
-                if gate_enforce_failed and not persist_repaired_lines:
-                    # Keep status consistent when quality gate fails after generation.
-                    _sync_script_artifacts_after_repair(
-                        checkpoint_path=result.checkpoint_path,
-                        run_summary_path=result.run_summary_path,
-                        repaired_lines=None,
-                        status="failed",
-                        failure_kind=ERROR_KIND_SCRIPT_QUALITY,
-                        logger=logger,
-                    )
-                quality_report.update(
-                    {
-                        "quality_stage_started": True,
-                        "quality_stage_finished": True,
-                        "quality_stage_interrupted": False,
-                        "quality_report_phase": "final",
-                        "quality_report_path": quality_report_path,
-                        "quality_report_initial_path": quality_report_initial_path,
-                    }
-                )
-                write_quality_report(quality_report_path, quality_report)
-                _sync_script_phase_metrics(
-                    run_summary_path=result.run_summary_path,
-                    phase_metrics={
-                        "quality_eval": quality_eval_seconds,
-                        "repair": quality_repair_seconds,
-                        "quality_repair": quality_repair_seconds,
-                    },
-                    logger=logger,
-                )
-                if not gate_passed:
-                    if script_gate_action == "enforce":
-                        # In enforce mode, quality rejection becomes a hard
-                        # operational failure for the script stage.
-                        raise ScriptOperationError(
-                            "Script quality gate rejected generated script",
-                            error_kind=ERROR_KIND_SCRIPT_QUALITY,
-                        )
-                    logger.warn(
-                        "script_quality_gate_warn_continue",
-                        report_path=quality_report_path,
-                        reasons=quality_report.get("reasons", []),
-                    )
         logger.info(
             "script_success",
             output_path=result.output_path,
@@ -1071,7 +787,7 @@ def main(argv: list[str] | None = None) -> int:
                 "handoff_to_audio_started": handoff_to_audio_started,
                 "handoff_to_audio_completed": handoff_to_audio_completed,
                 "quality_report_path": quality_report_path,
-                "quality_report_initial_path": quality_report_initial_path,
+                "script_quality_report_path": script_quality_report_path or quality_report_path,
                 "script_orchestrated_retry_enabled": bool(script_orchestrated_retry_enabled),
                 "script_orchestrated_retry_max_attempts": int(script_orchestrated_retry_max_attempts),
                 "script_orchestrated_retry_attempts_used": int(script_orchestrated_retry_attempts_used),
@@ -1090,8 +806,6 @@ def main(argv: list[str] | None = None) -> int:
                 "run_manifest_path": manifest_path,
                 "phase_seconds": {
                     "quality_eval": round(float(quality_eval_seconds), 3),
-                    "repair": round(float(quality_repair_seconds), 3),
-                    "quality_repair": round(float(quality_repair_seconds), 3),
                 },
             }
             if os.path.exists(run_summary_path):
@@ -1123,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
                 "handoff_to_audio_started": handoff_to_audio_started,
                 "handoff_to_audio_completed": handoff_to_audio_completed,
                 "quality_report_path": quality_report_path,
-                "quality_report_initial_path": quality_report_initial_path,
+                "script_quality_report_path": script_quality_report_path or quality_report_path,
                 "script_orchestrated_retry_enabled": bool(script_orchestrated_retry_enabled),
                 "script_orchestrated_retry_max_attempts": int(script_orchestrated_retry_max_attempts),
                 "script_orchestrated_retry_attempts_used": int(script_orchestrated_retry_attempts_used),
@@ -1165,7 +879,8 @@ def main(argv: list[str] | None = None) -> int:
                             "failure_kind": None if stage_status == "completed" else failure_kind,
                             "run_summary_path": run_summary_path,
                             "quality_report_path": quality_report_path,
-                            "quality_report_initial_path": quality_report_initial_path,
+                            "script_quality_report_path": script_quality_report_path or quality_report_path,
+                            "artifact_paths": dict(getattr(result, "artifact_paths", {}) or {}),
                             "quality_stage_started": quality_stage_started,
                             "quality_stage_finished": quality_stage_finished,
                             "quality_stage_interrupted": quality_stage_interrupted,

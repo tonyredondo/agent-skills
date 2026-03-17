@@ -24,14 +24,37 @@ from .errors import (
     ERROR_KIND_INVALID_SCHEMA,
     ERROR_KIND_OPENAI_EMPTY_OUTPUT,
     ERROR_KIND_RESUME_BLOCKED,
+    ERROR_KIND_SCRIPT_QUALITY,
     ERROR_KIND_SCRIPT_COMPLETENESS,
     ERROR_KIND_SOURCE_TOO_SHORT,
     ERROR_KIND_STUCK,
     ERROR_KIND_UNKNOWN,
     ScriptOperationError,
 )
+from .dialogue_drafter import DialogueDrafter
+from .editorial_gate import EditorialGate
+from .editorial_rewriter import EditorialRewriter
+from .episode_planner import EpisodePlanner
+from .evidence_map import EvidenceMapBuilder
+from .fact_guard import FactGuard
 from .logging_utils import Logger
 from .openai_client import OpenAIClient
+from .podcast_artifacts import (
+    RESUME_COMPAT_VERSION,
+    build_script_artifact,
+    build_script_artifact_paths,
+    build_public_script_payload,
+    public_lines_from_script_artifact,
+    read_json_artifact,
+    rewrite_round_path,
+    validate_editorial_report,
+    validate_episode_plan,
+    validate_evidence_map,
+    validate_fact_guard_report,
+    validate_script_artifact,
+    write_json_artifact,
+    write_script_payload,
+)
 from .schema import (
     SCRIPT_JSON_SCHEMA,
     canonical_json,
@@ -63,6 +86,7 @@ from .script_generator_helpers import (
     sum_int_maps as _sum_int_maps,
 )
 from .run_manifest import pipeline_summary_path, resolve_episode_id, run_manifest_path
+from .structural_gate import StructuralGate
 
 
 SOURCE_AUTHOR_LINE_RE = re.compile(
@@ -107,6 +131,8 @@ class ScriptGenerationResult:
     script_retry_rate: float
     invalid_schema_rate: float
     schema_validation_failures: int
+    quality_report_path: str = ""
+    artifact_paths: Dict[str, str] | None = None
 
 
 @dataclass
@@ -785,28 +811,6 @@ class ScriptGenerator:
                 }
             )
         return plan
-
-    def _outline_category_coverage_ratio(
-        self,
-        *,
-        outline: List[Dict[str, Any]],
-        chunks_done: int,
-    ) -> float:
-        """Estimate coverage ratio of planned categories by completed chunks."""
-        planned_categories = {
-            str(section.get("category", "")).strip()
-            for section in list(outline or [])
-            if str(section.get("category", "")).strip()
-        }
-        if not planned_categories:
-            return 1.0
-        limit = max(0, min(int(chunks_done), len(outline)))
-        covered_categories = {
-            str(section.get("category", "")).strip()
-            for section in list(outline or [])[:limit]
-            if str(section.get("category", "")).strip()
-        }
-        return float(len(covered_categories)) / float(max(1, len(planned_categories)))
 
     def _extract_source_agenda_topics(self, source_text: str) -> List[str]:
         lines = [line.strip() for line in str(source_text or "").splitlines() if str(line or "").strip()]
@@ -2111,13 +2115,16 @@ class ScriptGenerator:
         cached = str(state.get("generation_source", "")).strip()
         if cached:
             return cached
-        if resume and int(state.get("chunks_done", 0) or 0) > 0 and not resume_force:
+        phase_cursor = str(state.get("phase_cursor", "") or "").strip().lower()
+        phase_status = dict(state.get("phase_status", {}) or {})
+        has_pipeline_progress = bool(phase_status) or phase_cursor not in {"", "startup"}
+        if resume and has_pipeline_progress and not resume_force:
             raise ScriptOperationError(
                 "Resume blocked because checkpoint is missing generation_source. "
                 "Use --resume-force to recompute and continue.",
                 error_kind=ERROR_KIND_RESUME_BLOCKED,
             )
-        if resume and int(state.get("chunks_done", 0) or 0) > 0 and resume_force:
+        if resume and has_pipeline_progress and resume_force:
             self.logger.warn("resume_force_recomputing_generation_source")
         generated = self._maybe_pre_summarize_source(source=source, cancel_check=cancel_check)
         state["generation_source"] = generated
@@ -2133,6 +2140,7 @@ class ScriptGenerator:
         store: ScriptCheckpointStore,
         source_hash: str,
         cfg_fp: str,
+        run_token: str,
         resume: bool,
         resume_force: bool,
     ) -> Dict[str, Any]:
@@ -2150,6 +2158,7 @@ class ScriptGenerator:
                         initial = store.create_initial_state(
                             source_hash=source_hash,
                             config_fingerprint=cfg_fp,
+                            run_token=run_token,
                         )
                         store.save(initial)
                         return initial
@@ -2182,7 +2191,14 @@ class ScriptGenerator:
                 self.logger.info("checkpoint_version_migrated", checkpoint=store.checkpoint_path)
             self.logger.info(
                 "resume_script_checkpoint",
-                chunks_done=existing.get("chunks_done", 0),
+                phase_cursor=existing.get("phase_cursor", "startup"),
+                completed_phases=len(
+                    [
+                        name
+                        for name, status in dict(existing.get("phase_status", {}) or {}).items()
+                        if str(status).strip().lower() == "completed"
+                    ]
+                ),
                 word_count=existing.get("current_word_count", 0),
             )
             return existing
@@ -2194,11 +2210,191 @@ class ScriptGenerator:
                 backup_path=store.last_corrupt_backup_path,
                 error=store.last_corrupt_error,
             )
-        initial = store.create_initial_state(source_hash=source_hash, config_fingerprint=cfg_fp)
+        initial = store.create_initial_state(
+            source_hash=source_hash,
+            config_fingerprint=cfg_fp,
+            run_token=run_token,
+        )
         store.save(initial)
         return initial
 
-    def generate(
+    def _artifact_identity_matches(
+        self,
+        *,
+        payload: Dict[str, Any],
+        expected: Dict[str, Any] | None,
+    ) -> bool:
+        if not expected:
+            return True
+        for key, value in dict(expected or {}).items():
+            expected_value = str(value or "").strip()
+            if not expected_value:
+                continue
+            if str(payload.get(key, "") or "").strip() != expected_value:
+                return False
+        return True
+
+    def _load_validated_artifact(
+        self,
+        *,
+        state: Dict[str, Any],
+        phase_name: str,
+        path: str,
+        validator: Callable[[Dict[str, Any]], Dict[str, Any]],
+        expected_identity: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any] | None:
+        """Load one artifact only when phase state marks it as completed."""
+        phase_status = dict(state.get("phase_status", {}) or {})
+        if str(phase_status.get(phase_name, "")).strip().lower() != "completed":
+            return None
+        if not os.path.exists(path):
+            return None
+        try:
+            payload = read_json_artifact(path)
+            validated = validator(payload)
+            if not self._artifact_identity_matches(payload=validated, expected=expected_identity):
+                self.logger.warn("artifact_resume_identity_mismatch", phase=phase_name, path=path)
+                return None
+            return validated
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warn("artifact_resume_reload_failed", phase=phase_name, path=path, error=str(exc))
+            return None
+
+    def _mark_phase_state(
+        self,
+        *,
+        state: Dict[str, Any],
+        store: ScriptCheckpointStore,
+        phase_name: str,
+        status: str,
+    ) -> None:
+        phase_status = dict(state.get("phase_status", {}) or {})
+        phase_status[str(phase_name)] = str(status)
+        state["phase_status"] = phase_status
+        state["phase_cursor"] = str(phase_name)
+        state["last_success_at"] = int(time.time())
+        store.save(state)
+
+    def _build_quality_report_payload(
+        self,
+        *,
+        output_path: str,
+        final_artifact: Dict[str, Any],
+        structural_report: Dict[str, Any],
+        editorial_report: Dict[str, Any],
+        fact_guard_report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        final_lines = list(final_artifact.get("lines", []) or [])
+        editorial_scores = dict(editorial_report.get("scores", {}) or {})
+        reasons: List[str] = []
+        reasons.extend(str(item).strip() for item in list(structural_report.get("notes", []) or []) if str(item).strip())
+        for failure in list(editorial_report.get("failures", []) or []):
+            if isinstance(failure, dict):
+                reason = str(failure.get("failure_type", "") or "").strip()
+                if reason:
+                    reasons.append(reason)
+        for issue in list(fact_guard_report.get("issues", []) or []):
+            if isinstance(issue, dict):
+                issue_type = str(issue.get("issue_type", "") or "").strip()
+                if issue_type:
+                    reasons.append(issue_type)
+        dedup_reasons: List[str] = []
+        for reason in reasons:
+            if reason and reason not in dedup_reasons:
+                dedup_reasons.append(reason)
+        fact_guard_blocking = self._fact_guard_blocks(fact_guard_report)
+        coverage = dict(final_artifact.get("coverage", {}) or {})
+        passed = bool(
+            structural_report.get("pass", False)
+            and editorial_report.get("pass", False)
+            and not fact_guard_blocking
+        )
+        return {
+            "component": "script_quality_gate",
+            "resume_compat_version": RESUME_COMPAT_VERSION,
+            "status": "passed" if passed else "failed",
+            "pass": passed,
+            "action": "enforce",
+            "evaluator": "editorial_pipeline",
+            "profile": self.config.profile_name,
+            "run_token": final_artifact.get("run_token", ""),
+            "source_digest": final_artifact.get("source_digest", ""),
+            "plan_digest": final_artifact.get("plan_digest", ""),
+            "internal_artifact_digest": final_artifact.get("internal_artifact_digest", ""),
+            "public_payload_digest": final_artifact.get("public_payload_digest", ""),
+            "script_path": output_path,
+            "line_count": len(final_lines),
+            "word_count": count_words_from_lines(final_lines),
+            "rules": dict(structural_report.get("checks", {}) or {}),
+            "scores": {
+                "overall_score": editorial_scores.get("listener_engagement"),
+                "cadence_score": editorial_scores.get("orality"),
+                "logic_score": editorial_scores.get("progression"),
+                "clarity_score": editorial_scores.get("density_control"),
+                "editorial_scores": editorial_scores,
+            },
+            "reasons_structural": list(structural_report.get("notes", []) or []),
+            "reasons_llm": [str(item.get("failure_type")) for item in list(editorial_report.get("failures", []) or []) if isinstance(item, dict)],
+            "llm_score_failures": [],
+            "evidence_structural": {
+                "failed_rules": [
+                    name for name, ok in dict(structural_report.get("checks", {}) or {}).items() if not bool(ok)
+                ],
+                "structural_report": structural_report,
+                "editorial_deterministic_metrics": dict(editorial_report.get("deterministic_metrics", {}) or {}),
+            },
+            "llm_called": True,
+            "llm_sampled": True,
+            "llm_error": False,
+            "llm_explicit_fail": not bool(editorial_report.get("pass", False)),
+            "llm_editorial_fail": not bool(editorial_report.get("pass", False)),
+            "llm_truncation_claims_filtered": 0,
+            "llm_rule_judgments": {},
+            "llm_rule_judgments_applied": False,
+            "llm_rule_judgments_confidence": None,
+            "llm_degraded_to_rules": False,
+            "semantic_rule_fallback": {"enabled": False},
+            "source_topic_balance": {},
+            "coverage": coverage,
+            "fact_guard_warning_count": sum(
+                1
+                for issue in list(fact_guard_report.get("issues", []) or [])
+                if isinstance(issue, dict) and str(issue.get("action", "")).strip().lower() not in {"block", "rewrite_local"}
+            ),
+            "fact_guard_repairable_count": sum(
+                1
+                for issue in list(fact_guard_report.get("issues", []) or [])
+                if isinstance(issue, dict) and str(issue.get("action", "")).strip().lower() == "rewrite_local"
+            ),
+            "fact_guard_blocking": fact_guard_blocking,
+            "hard_fail_eligible": not passed,
+            "score_blocking_enabled": True,
+            "score_blocking_critical_threshold": 3.6,
+            "score_blocking_critical_failed": not passed,
+            "hard_fail_structural_only_rollout": False,
+            "editorial_warn_only": False,
+            "reasons": dedup_reasons,
+            "failure_kind": (ERROR_KIND_SCRIPT_QUALITY if not passed else None),
+            "structural_report_path": "",
+            "editorial_report_path": "",
+            "fact_guard_report_path": "",
+            "script_quality_report_path": "",
+        }
+
+    def _fact_guard_blocks(self, report: Dict[str, Any]) -> bool:
+        """Only high-severity or explicit block actions stop the pipeline."""
+        if bool(report.get("pass", False)):
+            return False
+        for issue in list(report.get("issues", []) or []):
+            if not isinstance(issue, dict):
+                continue
+            if str(issue.get("action", "")).strip().lower() == "block":
+                return True
+            if str(issue.get("severity", "")).strip().lower() == "high":
+                return True
+        return False
+
+    def _generate_redesigned(
         self,
         *,
         source_text: str,
@@ -2210,16 +2406,13 @@ class ScriptGenerator:
         cancel_check: Optional[Callable[[], bool]] = None,
         run_token: Optional[str] = None,
     ) -> ScriptGenerationResult:
-        """Generate final script JSON with checkpointing and resilience controls."""
+        """Execute the redesigned planner->drafter->rewriter pipeline."""
         source = source_text.strip()
         if not source:
             raise RuntimeError("Input source is empty. Provide enough content to build a podcast.")
 
         min_words = self.config.min_words
-        max_words = self.config.max_words
-        if max_words < min_words:
-            max_words = min_words
-
+        max_words = max(self.config.max_words, min_words)
         resolved_episode_id = resolve_episode_id(output_path=output_path, override=episode_id)
         store = ScriptCheckpointStore(
             base_dir=self.config.checkpoint_dir,
@@ -2229,15 +2422,27 @@ class ScriptGenerator:
         store.acquire_lock(force_unlock=force_unlock)
         started = time.time()
         run_summary_path = os.path.join(store.run_dir, "run_summary.json")
+        effective_run_token = str(run_token or f"run_{int(started)}").strip()
         source_word_count = len(source.split())
+        phase_seconds: Dict[str, float] = {
+            "pre_summary": 0.0,
+            "evidence_map": 0.0,
+            "episode_plan": 0.0,
+            "draft_dialogue": 0.0,
+            "fact_guard_draft": 0.0,
+            "editorial_rewrite": 0.0,
+            "editorial_gate": 0.0,
+            "fact_guard_final": 0.0,
+            "postprocess": 0.0,
+            "chunk_generation": 0.0,
+            "continuations": 0.0,
+            "truncation_recovery": 0.0,
+        }
         source_validation = {
             "source_word_count": source_word_count,
             "target_word_range": [int(min_words), int(max_words)],
             "target_word_count": max(min_words, int((min_words + max_words) / 2)),
-            "source_to_target_ratio": round(
-                float(source_word_count) / float(max(1, max(min_words, int((min_words + max_words) / 2)))),
-                4,
-            ),
+            "source_to_target_ratio": 0.0,
             "source_validation_status": "ok",
             "source_validation_reason": "",
             "source_validation_blocked": False,
@@ -2245,68 +2450,35 @@ class ScriptGenerator:
             "source_recommended_min_words": 0,
             "source_required_min_words": 0,
         }
-        phase_seconds: Dict[str, float] = {
-            "pre_summary": 0.0,
-            "chunk_generation": 0.0,
-            "continuations": 0.0,
-            "truncation_recovery": 0.0,
-            "postprocess": 0.0,
-        }
-        truncation_recovery_triggered = False
-        truncation_recovery_added_words = 0
         state: Dict[str, Any] = {}
-        continuation_round = 0
-        total_chunks = 0
-        completeness_check_enabled = _env_bool("SCRIPT_COMPLETENESS_CHECK_V2", True)
-        completeness_before_repair: Dict[str, object] = _default_completeness_report()
-        completeness_after_repair: Dict[str, object] = _default_completeness_report()
-
+        quality_report_path = ""
+        artifact_paths: Dict[str, str] = {}
         try:
-            # Reset per-run counters so resumes/retries report clean deltas.
-            self._schema_validation_failures = 0
-            self._schema_repair_successes = 0
-            self._schema_repair_failures = 0
-            self._schema_validation_failures_by_stage = {}
-            self._schema_repair_successes_by_stage = {}
-            self._schema_repair_failures_by_stage = {}
-            self._schema_salvage_attempts = 0
-            self._schema_salvage_successes = 0
-            self._schema_salvage_failures = 0
-            self._schema_salvage_attempts_by_stage = {}
-            self._schema_salvage_successes_by_stage = {}
-            self._schema_salvage_failures_by_stage = {}
-            self._no_progress_abort = False
-            self._chunk_subsplit_recoveries = 0
-            self._adaptive_subpart_failures = 0
-            self._adaptive_subpart_recoveries = 0
-            self._adaptive_subpart_skips = 0
-            self._continuation_recovery_attempts = 0
-            self._continuation_recovery_successes = 0
-            self._continuation_fallback_closures = 0
-            self._continuation_fallback_extensions = 0
-            self._fallback_modes_by_stage = {}
-            self._source_authors_detected = []
-            self._source_agenda_topics = []
-            self._outline_agenda_topics = []
-            self._truncation_recovery_fallback_used = False
-            self._truncation_pressure_peak = 0.0
-            self._truncation_pressure_adaptive_events = 0
-            self._truncation_pressure_presplit_events = 0
-            self._last_stage = "startup"
             cfg_fp = config_fingerprint(
                 script_cfg=self.config,
                 reliability_cfg=self.reliability,
-                extra={"component": "script_generator"},
+                extra={"component": "script_generator_redesigned"},
             )
             source_digest = content_hash(source)
             state = self._load_or_init_state(
                 store=store,
                 source_hash=source_digest,
                 cfg_fp=cfg_fp,
+                run_token=effective_run_token,
                 resume=resume,
                 resume_force=resume_force,
             )
-            # Validate source suitability before spending API budget.
+            existing_run_token = str(state.get("run_token", "") or "").strip()
+            if existing_run_token:
+                effective_run_token = existing_run_token
+            else:
+                state["run_token"] = effective_run_token
+            state["resume_compat_version"] = RESUME_COMPAT_VERSION
+            artifact_paths = build_script_artifact_paths(run_dir=store.run_dir)
+            state["artifact_paths"] = artifact_paths
+            if "phase_status" not in state or not isinstance(state.get("phase_status"), dict):
+                state["phase_status"] = {}
+            store.save(state)
             source_validation = self._validate_source_length(
                 source_word_count=source_word_count,
                 min_words=min_words,
@@ -2317,533 +2489,467 @@ class ScriptGenerator:
                     str(source_validation.get("source_validation_blocked_message") or "Source validation blocked run"),
                     error_kind=ERROR_KIND_SOURCE_TOO_SHORT,
                 )
-
-            raw_lines = state.get("lines", [])
-            lines: List[Dict[str, str]] = []
-            if raw_lines:
-                try:
-                    lines = validate_script_payload({"lines": raw_lines})["lines"]
-                except Exception:
-                    migrated_lines = _migrate_checkpoint_lines(raw_lines)
-                    if not migrated_lines:
-                        raise
-                    lines = validate_script_payload({"lines": migrated_lines})["lines"]
-                    state["lines"] = lines
-                    state["current_word_count"] = count_words_from_lines(lines)
-                    state["last_success_at"] = int(time.time())
-                    store.save(state)
-                    self.logger.warn(
-                        "resume_lines_migrated",
-                        previous_lines=len(raw_lines) if isinstance(raw_lines, list) else 0,
-                        migrated_lines=len(lines),
-                    )
-            lines = fix_mid_farewells(lines)
             pre_summary_started = time.time()
             self._last_stage = "pre_summary"
-            try:
-                # Source may be pre-summarized/cached to stabilize long inputs.
-                source_for_generation = self._resolve_generation_source(
-                    source=source,
-                    state=state,
-                    store=store,
-                    resume=resume,
-                    resume_force=resume_force,
-                    cancel_check=cancel_check,
-                )
-                self._source_authors_detected = self._extract_source_authors(source_for_generation)
-                self._source_agenda_topics = self._extract_source_agenda_topics(source)
-                if not self._source_agenda_topics:
-                    self._source_agenda_topics = self._extract_source_agenda_topics(source_for_generation)
-                self._source_index_entries = self._extract_source_index_entries(source)
-                if not self._source_index_entries:
-                    self._source_index_entries = self._extract_source_index_entries(source_for_generation)
-            finally:
-                phase_seconds["pre_summary"] = round(time.time() - pre_summary_started, 3)
-            chunks = split_source_chunks(
-                source_for_generation,
-                target_minutes=self.config.target_minutes,
-                chunk_target_minutes=self.config.chunk_target_minutes,
-                words_per_min=self.config.words_per_min,
+            source_for_generation = self._resolve_generation_source(
+                source=source,
+                state=state,
+                store=store,
+                resume=resume,
+                resume_force=resume_force,
+                cancel_check=cancel_check,
             )
-            if not chunks:
-                raise RuntimeError("Could not split source into chunks")
-            outline = self._build_outline(chunks=chunks, min_words=min_words, max_words=max_words)
-            self._outline_agenda_topics = self._extract_outline_agenda_topics(outline)
-            self.logger.info("outline_planned", sections=len(outline))
+            phase_seconds["pre_summary"] = round(time.time() - pre_summary_started, 3)
 
-            chunk_start = int(state.get("chunks_done", 0))
-            if chunk_start > len(chunks):
-                chunk_start = len(chunks)
-            total_chunks = len(chunks)
+            evidence_map = self._load_validated_artifact(
+                state=state,
+                phase_name="evidence_map",
+                path=artifact_paths["evidence_map"],
+                validator=validate_evidence_map,
+                expected_identity={
+                    "episode_id": resolved_episode_id,
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                },
+            )
+            if evidence_map is None:
+                self._last_stage = "evidence_map"
+                phase_started = time.time()
+                evidence_map = EvidenceMapBuilder(client=self.client, logger=self.logger).build(
+                    source_text=source,
+                    source_digest=source_digest,
+                    episode_id=resolved_episode_id,
+                    run_token=effective_run_token,
+                    target_minutes=self.config.target_minutes,
+                    chunk_target_minutes=self.config.pre_summary_chunk_target_minutes,
+                    words_per_min=self.config.words_per_min,
+                )
+                write_json_artifact(path=artifact_paths["evidence_map"], payload=evidence_map)
+                phase_seconds["evidence_map"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="evidence_map", status="completed")
 
-            self.logger.info(
-                "script_generation_start",
-                chunks=total_chunks,
-                from_chunk=chunk_start,
+            episode_plan = self._load_validated_artifact(
+                state=state,
+                phase_name="episode_plan",
+                path=artifact_paths["episode_plan"],
+                validator=validate_episode_plan,
+                expected_identity={
+                    "episode_id": resolved_episode_id,
+                    "run_token": effective_run_token,
+                },
+            )
+            if episode_plan is None:
+                self._last_stage = "episode_plan"
+                phase_started = time.time()
+                episode_plan = EpisodePlanner(client=self.client, logger=self.logger).build(
+                    evidence_map=evidence_map,
+                    episode_id=resolved_episode_id,
+                    run_token=effective_run_token,
+                    profile_name=self.config.profile_name,
+                    min_words=min_words,
+                    max_words=max_words,
+                )
+                write_json_artifact(path=artifact_paths["episode_plan"], payload=episode_plan)
+                phase_seconds["episode_plan"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="episode_plan", status="completed")
+            plan_digest = content_hash(canonical_json(episode_plan))
+            state["plan_digest"] = plan_digest
+
+            draft_artifact = self._load_validated_artifact(
+                state=state,
+                phase_name="draft_dialogue",
+                path=artifact_paths["draft_script"],
+                validator=lambda payload: validate_script_artifact(
+                    payload,
+                    expected_stage="draft",
+                    episode_plan=episode_plan,
+                ),
+                expected_identity={
+                    "episode_id": resolved_episode_id,
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                },
+            )
+            if draft_artifact is None:
+                self._last_stage = "draft_dialogue"
+                phase_started = time.time()
+                draft_artifact = DialogueDrafter(client=self.client, logger=self.logger).draft(
+                    evidence_map=evidence_map,
+                    episode_plan=episode_plan,
+                    episode_id=resolved_episode_id,
+                    run_token=effective_run_token,
+                    source_digest=source_digest,
+                    plan_digest=plan_digest,
+                    profile_name=self.config.profile_name,
+                    min_words=min_words,
+                    max_words=max_words,
+                )
+                write_json_artifact(path=artifact_paths["draft_script_raw"], payload=draft_artifact)
+                phase_seconds["draft_dialogue"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="draft_dialogue", status="completed")
+
+            fact_guard = FactGuard(client=self.client, logger=self.logger)
+            fact_guard_draft_report = self._load_validated_artifact(
+                state=state,
+                phase_name="fact_guard_draft",
+                path=artifact_paths["fact_guard_report_draft"],
+                validator=validate_fact_guard_report,
+                expected_identity={
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                    "internal_artifact_digest": str(draft_artifact.get("internal_artifact_digest", "")),
+                },
+            )
+            if fact_guard_draft_report is None:
+                self._last_stage = "fact_guard_draft"
+                phase_started = time.time()
+                fact_guard_draft_report = fact_guard.validate(
+                    script_artifact=draft_artifact,
+                    evidence_map=evidence_map,
+                    episode_plan=episode_plan,
+                    stage_name="draft",
+                )
+                if not bool(fact_guard_draft_report.get("pass", False)):
+                    draft_artifact = fact_guard.repair(
+                        script_artifact=draft_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        report=fact_guard_draft_report,
+                        stage_name="draft",
+                    )
+                    fact_guard_draft_report = fact_guard.validate(
+                        script_artifact=draft_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        stage_name="draft",
+                    )
+                write_json_artifact(path=artifact_paths["draft_script_fact_checked"], payload=draft_artifact)
+                write_json_artifact(path=artifact_paths["draft_script"], payload=draft_artifact)
+                write_json_artifact(
+                    path=artifact_paths["fact_guard_report_draft"],
+                    payload=fact_guard_draft_report,
+                )
+                phase_seconds["fact_guard_draft"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="fact_guard_draft", status="completed")
+            else:
+                write_json_artifact(path=artifact_paths["draft_script"], payload=draft_artifact)
+            if self._fact_guard_blocks(fact_guard_draft_report):
+                raise ScriptOperationError(
+                    "Draft failed factual validation",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
+
+            rewritten_artifact = self._load_validated_artifact(
+                state=state,
+                phase_name="editorial_rewrite",
+                path=artifact_paths["rewritten_script"],
+                validator=lambda payload: validate_script_artifact(
+                    payload,
+                    expected_stage="rewritten",
+                    episode_plan=episode_plan,
+                    prior_artifact=draft_artifact,
+                ),
+                expected_identity={
+                    "episode_id": resolved_episode_id,
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                },
+            )
+            editorial_gate = EditorialGate(client=self.client, logger=self.logger)
+            editorial_report = None
+            if rewritten_artifact is not None:
+                editorial_report = self._load_validated_artifact(
+                    state=state,
+                    phase_name="editorial_gate",
+                    path=artifact_paths["editorial_report"],
+                    validator=validate_editorial_report,
+                    expected_identity={
+                        "run_token": effective_run_token,
+                        "source_digest": source_digest,
+                        "plan_digest": plan_digest,
+                        "internal_artifact_digest": str(rewritten_artifact.get("internal_artifact_digest", "")),
+                    },
+                )
+            max_rewrite_rounds = 2
+            round_used = 0
+            if editorial_report is not None and bool(editorial_report.get("pass", False)):
+                self._mark_phase_state(state=state, store=store, phase_name="editorial_gate", status="completed")
+            else:
+                if rewritten_artifact is None:
+                    self._last_stage = "editorial_rewrite"
+                    phase_started = time.time()
+                    round_used = 1
+                    rewritten_artifact = EditorialRewriter(client=self.client, logger=self.logger).rewrite(
+                        script_artifact=draft_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        editorial_report=None,
+                        round_idx=round_used,
+                    )
+                    write_json_artifact(
+                        path=rewrite_round_path(run_dir=store.run_dir, round_idx=round_used),
+                        payload=rewritten_artifact,
+                    )
+                    write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
+                    write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
+                    phase_seconds["editorial_rewrite"] += round(time.time() - phase_started, 3)
+                    self._mark_phase_state(state=state, store=store, phase_name="editorial_rewrite", status="completed")
+                while True:
+                    if count_words_from_lines(list(rewritten_artifact.get("lines", []))) < int(min_words):
+                        expansion_lines = self._request_contextual_continuation_fallback_lines(
+                            lines_so_far=list(rewritten_artifact.get("lines", [])),
+                            min_words=min_words,
+                            max_words=max_words,
+                            source_context=source_for_generation,
+                            continuation_stage="editorial_underlength",
+                            mode="expand",
+                        )
+                        if expansion_lines:
+                            rewritten_artifact = build_script_artifact(
+                                stage="rewritten",
+                                episode_id=str(rewritten_artifact.get("episode_id")),
+                                run_token=str(rewritten_artifact.get("run_token")),
+                                source_digest=str(rewritten_artifact.get("source_digest")),
+                                plan_ref=str(rewritten_artifact.get("plan_ref")),
+                                plan_digest=str(rewritten_artifact.get("plan_digest")),
+                                lines=list(rewritten_artifact.get("lines", [])) + list(expansion_lines),
+                                episode_plan=episode_plan,
+                                prior_artifact=rewritten_artifact,
+                                target_word_count=rewritten_artifact.get("target_word_count"),
+                            )
+                            write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
+                            write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
+                    self._last_stage = "editorial_gate"
+                    phase_started = time.time()
+                    editorial_report = editorial_gate.evaluate(
+                        script_artifact=rewritten_artifact,
+                        script_lines=list(rewritten_artifact.get("lines", [])),
+                        episode_plan=episode_plan,
+                        evidence_map=evidence_map,
+                        profile_name=self.config.profile_name,
+                        min_words=min_words,
+                        max_words=max_words,
+                        round_used=round_used,
+                        max_rounds=max_rewrite_rounds,
+                    )
+                    editorial_report.update(
+                        {
+                            "run_token": effective_run_token,
+                            "source_digest": source_digest,
+                            "plan_digest": plan_digest,
+                            "internal_artifact_digest": rewritten_artifact.get("internal_artifact_digest", ""),
+                            "public_payload_digest": rewritten_artifact.get("public_payload_digest", ""),
+                        }
+                    )
+                    write_json_artifact(path=artifact_paths["editorial_report"], payload=editorial_report)
+                    phase_seconds["editorial_gate"] += round(time.time() - phase_started, 3)
+                    if bool(editorial_report.get("pass", False)):
+                        self._mark_phase_state(state=state, store=store, phase_name="editorial_gate", status="completed")
+                        break
+                    if round_used >= max_rewrite_rounds:
+                        break
+                    self._last_stage = "editorial_rewrite"
+                    phase_started = time.time()
+                    round_used += 1
+                    rewritten_artifact = EditorialRewriter(client=self.client, logger=self.logger).rewrite(
+                        script_artifact=rewritten_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        editorial_report=editorial_report,
+                        round_idx=round_used,
+                    )
+                    write_json_artifact(
+                        path=rewrite_round_path(run_dir=store.run_dir, round_idx=round_used),
+                        payload=rewritten_artifact,
+                    )
+                    write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
+                    write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
+                    phase_seconds["editorial_rewrite"] += round(time.time() - phase_started, 3)
+                    self._mark_phase_state(state=state, store=store, phase_name="editorial_rewrite", status="completed")
+            if not bool(editorial_report.get("pass", False)):
+                raise ScriptOperationError(
+                    "Editorial gate rejected generated script",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
+            write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
+            write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
+
+            fact_guard_final_report = self._load_validated_artifact(
+                state=state,
+                phase_name="fact_guard_final",
+                path=artifact_paths["fact_guard_report_final"],
+                validator=validate_fact_guard_report,
+                expected_identity={
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                    "internal_artifact_digest": str(rewritten_artifact.get("internal_artifact_digest", "")),
+                },
+            )
+            if fact_guard_final_report is None:
+                self._last_stage = "fact_guard_final"
+                phase_started = time.time()
+                fact_guard_final_report = fact_guard.validate(
+                    script_artifact=rewritten_artifact,
+                    evidence_map=evidence_map,
+                    episode_plan=episode_plan,
+                    stage_name="rewritten",
+                )
+                if not bool(fact_guard_final_report.get("pass", False)):
+                    repaired = fact_guard.repair(
+                        script_artifact=rewritten_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        report=fact_guard_final_report,
+                        stage_name="rewritten",
+                    )
+                    rewritten_artifact = repaired
+                    write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
+                    write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
+                    fact_guard_final_report = fact_guard.validate(
+                        script_artifact=rewritten_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        stage_name="rewritten",
+                    )
+                write_json_artifact(
+                    path=artifact_paths["fact_guard_report_final"],
+                    payload=fact_guard_final_report,
+                )
+                phase_seconds["fact_guard_final"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="fact_guard_final", status="completed")
+            if self._fact_guard_blocks(fact_guard_final_report):
+                raise ScriptOperationError(
+                    "Final script failed factual validation",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
+
+            self._last_stage = "structural_finalize"
+            phase_started = time.time()
+            structural_gate = StructuralGate(max_consecutive_same_speaker=self._max_consecutive_same_speaker())
+            final_lines = structural_gate.finalize(lines=list(rewritten_artifact.get("lines", [])))
+            structural_report = structural_gate.evaluate(lines=final_lines)
+            write_json_artifact(path=artifact_paths["structural_report"], payload=structural_report)
+            phase_seconds["postprocess"] = round(time.time() - phase_started, 3)
+            if not bool(structural_report.get("pass", False)):
+                raise ScriptOperationError(
+                    "Script failed structural validation",
+                    error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
+                )
+
+            final_artifact = build_script_artifact(
+                stage="final",
+                episode_id=resolved_episode_id,
+                run_token=effective_run_token,
+                source_digest=source_digest,
+                plan_ref=str(rewritten_artifact.get("plan_ref")),
+                plan_digest=plan_digest,
+                lines=final_lines,
+                episode_plan=episode_plan,
+                prior_artifact=rewritten_artifact,
+                target_word_count=rewritten_artifact.get("target_word_count"),
+            )
+            quality_editorial_report = EditorialGate(client=None, logger=self.logger).evaluate(
+                script_artifact=final_artifact,
+                script_lines=list(final_artifact.get("lines", [])),
+                episode_plan=episode_plan,
+                evidence_map=evidence_map,
+                profile_name=self.config.profile_name,
                 min_words=min_words,
                 max_words=max_words,
-                profile=self.config.profile_name,
+                round_used=round_used,
+                max_rounds=max_rewrite_rounds,
             )
-
-            with self.logger.heartbeat(
-                "script_generation",
-                status_fn=lambda: {
-                    "chunks_done": state.get("chunks_done", 0),
-                    "word_count": count_words_from_lines(lines),
-                },
-            ):
-                chunk_phase_started = time.time()
-                self._last_stage = "chunk_generation"
-                try:
-                    for chunk_idx in range(chunk_start, total_chunks):
-                        if cancel_check and cancel_check():
-                            state["status"] = "interrupted"
-                            state["last_success_at"] = int(time.time())
-                            store.save(state)
-                            raise InterruptedError("Interrupted by signal during chunk generation")
-                        chunk_tokens = (
-                            self.config.max_output_tokens_initial
-                            if chunk_idx == 0
-                            else self.config.max_output_tokens_chunk
-                        )
-                        new_lines = self._request_chunk_with_recovery(
-                            source_chunk=chunks[chunk_idx],
-                            chunk_idx=chunk_idx + 1,
-                            chunk_total=total_chunks,
-                            section_plan=outline[chunk_idx] if chunk_idx < len(outline) else {},
-                            lines_so_far=lines,
-                            min_words=min_words,
-                            max_words=max_words,
-                            max_output_tokens=chunk_tokens,
-                        )
-                        merged, added = dedupe_append(lines, new_lines)
-                        lines = fix_mid_farewells(merged)
-                        wc = count_words_from_lines(lines)
-                        self.logger.info(
-                            "chunk_completed",
-                            chunk=chunk_idx + 1,
-                            added_lines=added,
-                            total_lines=len(lines),
-                            word_count=wc,
-                        )
-                        state.update(
-                            {
-                                "chunks_done": chunk_idx + 1,
-                                "lines": lines,
-                                "current_word_count": wc,
-                                "continuation_round": 0,
-                                "no_progress_rounds": 0,
-                                "last_success_at": int(time.time()),
-                                "status": "running",
-                            }
-                        )
-                        store.save(state)
-                        if wc >= max_words and chunk_idx < (total_chunks - 1):
-                            # Soft gate: avoid hard-stop when category coverage is
-                            # still too narrow in multi-topic runs.
-                            coverage_ratio = self._outline_category_coverage_ratio(
-                                outline=outline,
-                                chunks_done=chunk_idx + 1,
-                            )
-                            min_coverage_ratio = max(
-                                0.0,
-                                min(1.0, _env_float("SCRIPT_TOPIC_COVERAGE_MIN_RATIO", 0.85)),
-                            )
-                            if coverage_ratio >= min_coverage_ratio:
-                                self.logger.warn(
-                                    "chunk_generation_early_stop_max_words",
-                                    chunk=chunk_idx + 1,
-                                    word_count=wc,
-                                    max_words=max_words,
-                                    remaining_chunks=max(0, total_chunks - (chunk_idx + 1)),
-                                    category_coverage_ratio=round(float(coverage_ratio), 4),
-                                    category_coverage_min_ratio=round(float(min_coverage_ratio), 4),
-                                )
-                                break
-                            self.logger.warn(
-                                "chunk_generation_skip_early_stop_for_coverage",
-                                chunk=chunk_idx + 1,
-                                word_count=wc,
-                                max_words=max_words,
-                                remaining_chunks=max(0, total_chunks - (chunk_idx + 1)),
-                                category_coverage_ratio=round(float(coverage_ratio), 4),
-                                category_coverage_min_ratio=round(float(min_coverage_ratio), 4),
-                            )
-                finally:
-                    phase_seconds["chunk_generation"] = round(time.time() - chunk_phase_started, 3)
-
-                # Continuations for minimum word target.
-                no_progress_rounds = int(state.get("no_progress_rounds", 0) or 0)
-                continuation_round = int(state.get("continuation_round", 0) or 0)
-                max_rounds = max(1, total_chunks * self.config.max_continuations_per_chunk)
-                continuation_phase_started = time.time()
-                self._last_stage = "continuations"
-                try:
-                    while count_words_from_lines(lines) < min_words and continuation_round < max_rounds:
-                        if cancel_check and cancel_check():
-                            state["status"] = "interrupted"
-                            state["last_success_at"] = int(time.time())
-                            store.save(state)
-                            raise InterruptedError("Interrupted by signal during continuations")
-                        continuation_round += 1
-                        prev_wc = count_words_from_lines(lines)
-                        new_lines = self._request_continuation_with_recovery(
-                            lines_so_far=lines,
-                            continuation_round=continuation_round,
-                            min_words=min_words,
-                            max_words=max_words,
-                            source_context=source_for_generation,
-                        )
-                        merged, _ = dedupe_append(lines, new_lines)
-                        lines = fix_mid_farewells(merged)
-                        new_wc = count_words_from_lines(lines)
-                        delta = new_wc - prev_wc
-                        self.logger.info(
-                            "continuation_completed",
-                            round=continuation_round,
-                            word_delta=delta,
-                            word_count=new_wc,
-                        )
-                        if delta < self.config.min_word_delta:
-                            no_progress_rounds += 1
-                        else:
-                            no_progress_rounds = 0
-                        if no_progress_rounds >= self.config.no_progress_rounds:
-                            # Safety brake for "alive but not progressing" loops.
-                            self._no_progress_abort = True
-                            raise RuntimeError(
-                                "No progress while expanding script. Aborting to avoid long hang."
-                            )
-                        state.update(
-                            {
-                                "lines": lines,
-                                "current_word_count": new_wc,
-                                "continuation_round": continuation_round,
-                                "no_progress_rounds": no_progress_rounds,
-                                "last_success_at": int(time.time()),
-                                "status": "running",
-                            }
-                        )
-                        store.save(state)
-                finally:
-                    phase_seconds["continuations"] = round(time.time() - continuation_phase_started, 3)
-
-                truncation_phase_started = time.time()
-                self._last_stage = "truncation_recovery"
-                try:
-                    if self._looks_truncated(lines):
-                        # Final-tail recovery runs once after chunking/continuations
-                        # if deterministic heuristics still detect truncation.
-                        prev_wc = count_words_from_lines(lines)
-                        self.logger.warn(
-                            "script_truncation_detected",
-                            word_count=prev_wc,
-                            continuation_round=continuation_round,
-                        )
-                        recovery_prompt = self._build_truncation_recovery_prompt(
-                            lines_so_far=lines,
-                            min_words=min_words,
-                            max_words=max_words,
-                        )
-                        recovery_tokens = self._adaptive_token_budget(
-                            base_tokens=self.config.max_output_tokens_continuation,
-                            stage="truncation_recovery_1",
-                        )
-                        try:
-                            recovery_lines = self._request_validated_lines(
-                                prompt=recovery_prompt,
-                                stage="truncation_recovery_1",
-                                max_output_tokens=recovery_tokens,
-                            )
-                            merged, _ = dedupe_append(lines, recovery_lines)
-                            lines = fix_mid_farewells(merged)
-                        except Exception as exc:  # noqa: BLE001
-                            empty_output_error = self._is_empty_output_error(exc)
-                            invalid_schema_error = self._is_invalid_schema_error(exc)
-                            if not empty_output_error and not invalid_schema_error:
-                                raise
-                            # Preserve partial output with deterministic closure when
-                            # recovery call fails due to empty/schema issues.
-                            self._truncation_recovery_fallback_used = True
-                            fallback_mode = (
-                                "empty_output_preserve_partial"
-                                if empty_output_error
-                                else "invalid_schema_preserve_partial"
-                            )
-                            fallback_event = (
-                                "script_truncation_recovery_empty_output_fallback"
-                                if empty_output_error
-                                else "script_truncation_recovery_invalid_schema_fallback"
-                            )
-                            self._mark_fallback_mode(
-                                stage="truncation_recovery_1",
-                                mode=fallback_mode,
-                            )
-                            self.logger.warn(
-                                fallback_event,
-                                error=str(exc),
-                            )
-                            lines = ensure_recap_near_end(lines)
-                            lines = ensure_farewell_close(lines)
-                            lines = harden_script_structure(
-                                lines,
-                                max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
-                            )
-                        new_wc = count_words_from_lines(lines)
-                        truncation_recovery_added_words = max(0, new_wc - prev_wc)
-                        truncation_recovery_triggered = True
-                        state.update(
-                            {
-                                "lines": lines,
-                                "current_word_count": new_wc,
-                                "last_success_at": int(time.time()),
-                                "status": "running",
-                            }
-                        )
-                        store.save(state)
-                        self.logger.info(
-                            "script_truncation_recovery_done",
-                            added_words=truncation_recovery_added_words,
-                            word_count=new_wc,
-                            fallback_used=bool(getattr(self, "_truncation_recovery_fallback_used", False)),
-                        )
-                finally:
-                    phase_seconds["truncation_recovery"] = round(time.time() - truncation_phase_started, 3)
-
-            postprocess_started = time.time()
-            self._last_stage = "postprocess"
-            try:
-                # Final deterministic hardening pass before writing output.
-                lines = harden_script_structure(
-                    lines,
-                    max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
-                )
-                if completeness_check_enabled:
-                    completeness_before_repair = evaluate_script_completeness(lines)
-                    lines = repair_script_completeness(
-                        lines,
-                        max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
-                    )
-                else:
-                    completeness_before_repair = _default_completeness_report(reason="check_disabled")
-                tentative_tail = ensure_recap_near_end(lines)
-                tentative_tail = ensure_farewell_close(tentative_tail)
-                tail_repair_needed = tentative_tail != lines
-                if tail_repair_needed:
-                    try:
-                        contextual_tail = self._request_contextual_tail_finalize(
-                            lines=lines,
-                            min_words=min_words,
-                            max_words=max_words,
-                            source_context=source_for_generation,
-                        )
-                        if contextual_tail:
-                            lines = contextual_tail
-                            self._mark_fallback_mode(
-                                stage="postprocess",
-                                mode="postprocess_contextual_tail_finalize",
-                            )
-                    except Exception as exc:  # noqa: BLE001
-                        self.logger.warn(
-                            "postprocess_contextual_tail_finalize_failed",
-                            error=str(exc),
-                        )
-                lines = ensure_recap_near_end(lines)
-                lines = ensure_farewell_close(lines)
-                lines = harden_script_structure(
-                    lines,
-                    max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
-                )
-                # Run a final closing pass after structural hardening so the tail
-                # always ends with a complete mini-summary + farewell.
-                lines = ensure_recap_near_end(lines)
-                lines = ensure_farewell_close(lines)
-                if completeness_check_enabled:
-                    completeness_after_repair = evaluate_script_completeness(lines)
-                    if not bool(completeness_after_repair.get("pass", False)):
-                        raise ScriptOperationError(
-                            "Script completeness check failed: "
-                            + ", ".join(
-                                str(reason) for reason in completeness_after_repair.get("reasons", []) or []
-                            ),
-                            error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
-                        )
-                else:
-                    completeness_after_repair = _default_completeness_report(reason="check_disabled")
-                final_wc = count_words_from_lines(lines)
-                if final_wc < min_words:
-                    raise ScriptOperationError(
-                        f"Generated script below minimum words target ({final_wc} < {min_words}). "
-                        "Increase source detail or continuation limits.",
-                        error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
-                    )
-                final_payload = {"lines": lines}
-                _atomic_write_text(output_path, canonical_json(final_payload))
-            finally:
-                phase_seconds["postprocess"] = round(time.time() - postprocess_started, 3)
+            quality_editorial_report.update(
+                {
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                    "internal_artifact_digest": final_artifact.get("internal_artifact_digest", ""),
+                    "public_payload_digest": final_artifact.get("public_payload_digest", ""),
+                }
+            )
+            public_payload = build_public_script_payload(artifact=final_artifact)
+            write_script_payload(path=output_path, lines=final_lines)
+            quality_report = self._build_quality_report_payload(
+                output_path=output_path,
+                final_artifact=final_artifact,
+                structural_report=structural_report,
+                editorial_report=quality_editorial_report,
+                fact_guard_report=fact_guard_final_report,
+            )
+            quality_report["structural_report_path"] = artifact_paths["structural_report"]
+            quality_report["editorial_report_path"] = artifact_paths["editorial_report"]
+            quality_report["fact_guard_report_path"] = artifact_paths["fact_guard_report_final"]
+            quality_report_path = artifact_paths["quality_report"]
+            quality_report["script_quality_report_path"] = quality_report_path
+            write_json_artifact(path=quality_report_path, payload=quality_report)
 
             state.update(
                 {
-                    "lines": lines,
-                    "current_word_count": final_wc,
-                    "continuation_round": continuation_round,
-                    "no_progress_rounds": no_progress_rounds,
+                    "lines": public_payload.get("lines", []),
+                    "current_word_count": count_words_from_lines(final_lines),
                     "status": "completed",
                     "completed_at": int(time.time()),
+                    "phase_cursor": "completed",
+                    "quality_report_path": quality_report_path,
+                    "script_quality_report_path": quality_report_path,
+                    "public_payload_digest": final_artifact.get("public_payload_digest", ""),
+                    "internal_artifact_digest": final_artifact.get("internal_artifact_digest", ""),
+                    "artifact_paths": artifact_paths,
                 }
             )
+            self._mark_phase_state(state=state, store=store, phase_name="structural_finalize", status="completed")
+            state["status"] = "completed"
             store.save(state)
-
             run_summary = {
                 "component": "script_generator",
                 "episode_id": resolved_episode_id,
-                "run_token": run_token,
+                "run_token": effective_run_token,
                 "profile": self.config.profile_name,
-                "word_count": final_wc,
-                "line_count": len(lines),
-                "chunks_done": state.get("chunks_done", 0),
-                "chunks_planned": total_chunks,
-                "continuation_rounds": continuation_round,
+                "status": "completed",
+                "word_count": count_words_from_lines(final_lines),
+                "line_count": len(final_lines),
+                "source_segments_count": int(len(evidence_map.get("source_segments", []))),
+                "beats_planned": int(len(episode_plan.get("beats", []))),
+                "phase_cursor": "completed",
+                "phase_status": dict(state.get("phase_status", {}) or {}),
                 "requests_made": self.client.requests_made,
                 "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
                 "elapsed_seconds": round(time.time() - started, 2),
                 "output_path": output_path,
-                "status": "completed",
                 "script_started_at": int(started),
                 "script_completed_at": int(time.time()),
                 "failed_stage": None,
                 "phase_seconds": _phase_seconds_with_generation(phase_seconds),
-                "truncation_recovery_triggered": truncation_recovery_triggered,
-                "truncation_recovery_added_words": truncation_recovery_added_words,
-                "truncation_recovery_fallback_used": bool(
-                    getattr(self, "_truncation_recovery_fallback_used", False)
-                ),
-                "expected_words_per_chunk": self.config.expected_words_per_chunk,
-                "expected_tokens_per_chunk": self.config.expected_tokens_per_chunk,
-                "expected_tokens_per_chunk_effective": self._effective_expected_tokens_per_chunk(),
-                "source_validation_mode": self.config.source_validation_mode,
-                "source_index_entry_count": int(len(list(getattr(self, "_source_index_entries", [])))),
-                "outline_category_coverage_ratio": round(
-                    float(
-                        self._outline_category_coverage_ratio(
-                            outline=outline,
-                            chunks_done=int(state.get("chunks_done", 0)),
-                        )
-                    ),
-                    4,
-                ),
-                "outline_categories_planned": [
-                    str(section.get("category", "")).strip()
-                    for section in list(outline or [])
-                    if str(section.get("category", "")).strip()
-                ],
                 "script_retry_rate": round(
                     float(getattr(self.client, "script_retries_total", 0))
                     / float(max(1, getattr(self.client, "requests_made", 0))),
                     4,
                 ),
-                "schema_validation_failures": int(self._schema_validation_failures),
-                "schema_repair_successes": int(self._schema_repair_successes),
-                "schema_repair_failures": int(self._schema_repair_failures),
-                "schema_salvage_attempts": int(getattr(self, "_schema_salvage_attempts", 0)),
-                "schema_salvage_successes": int(getattr(self, "_schema_salvage_successes", 0)),
-                "schema_salvage_failures": int(getattr(self, "_schema_salvage_failures", 0)),
-                "script_json_parse_failures": int(getattr(self.client, "script_json_parse_failures", 0)),
-                "script_empty_output_events": int(getattr(self.client, "script_empty_output_events", 0)),
-                "script_empty_output_retries": int(getattr(self.client, "script_empty_output_retries", 0)),
-                "script_empty_output_failures": int(getattr(self.client, "script_empty_output_failures", 0)),
-                "script_empty_output_by_stage": dict(getattr(self.client, "script_empty_output_by_stage", {})),
-                "schema_validation_failures_by_stage": dict(
-                    getattr(self, "_schema_validation_failures_by_stage", {})
-                ),
-                "schema_repair_successes_by_stage": dict(
-                    getattr(self, "_schema_repair_successes_by_stage", {})
-                ),
-                "schema_repair_failures_by_stage": dict(
-                    getattr(self, "_schema_repair_failures_by_stage", {})
-                ),
-                "schema_salvage_attempts_by_stage": dict(
-                    getattr(self, "_schema_salvage_attempts_by_stage", {})
-                ),
-                "schema_salvage_successes_by_stage": dict(
-                    getattr(self, "_schema_salvage_successes_by_stage", {})
-                ),
-                "schema_salvage_failures_by_stage": dict(
-                    getattr(self, "_schema_salvage_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_stage": dict(
-                    getattr(self.client, "script_json_parse_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                ),
-                "script_json_parse_repair_successes_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_successes_by_kind", {})
-                ),
-                "script_json_parse_repair_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_kind": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_kind", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_kind", {})),
-                ),
-                "schema_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                    dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                ),
-                "repair_attempts_by_stage": _sum_int_maps(
-                    _sum_int_maps(
-                        dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                        dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                    ),
-                    _sum_int_maps(
-                        dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                        dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                    ),
-                ),
                 "invalid_schema_rate": round(
-                    float(
-                        int(self._schema_validation_failures)
-                        + int(getattr(self.client, "script_json_parse_failures", 0))
-                    )
-                    / float(max(1, self.client.requests_made)),
+                    float(getattr(self.client, "script_json_parse_failures", 0))
+                    / float(max(1, getattr(self.client, "requests_made", 0))),
                     4,
                 ),
-                "stuck_abort": False,
-                "chunk_subsplit_recoveries": int(getattr(self, "_chunk_subsplit_recoveries", 0)),
-                "adaptive_subpart_failures": int(getattr(self, "_adaptive_subpart_failures", 0)),
-                "adaptive_subpart_recoveries": int(getattr(self, "_adaptive_subpart_recoveries", 0)),
-                "adaptive_subpart_skips": int(getattr(self, "_adaptive_subpart_skips", 0)),
-                "continuation_recovery_attempts": int(getattr(self, "_continuation_recovery_attempts", 0)),
-                "continuation_recovery_successes": int(
-                    getattr(self, "_continuation_recovery_successes", 0)
-                ),
-                "continuation_fallback_closures": int(
-                    getattr(self, "_continuation_fallback_closures", 0)
-                ),
-                "continuation_fallback_extensions": int(
-                    getattr(self, "_continuation_fallback_extensions", 0)
-                ),
-                "script_completeness_before_repair": dict(completeness_before_repair),
-                "script_completeness_after_repair": dict(completeness_after_repair),
-                "script_completeness_pass": bool(completeness_after_repair.get("pass", False)),
-                "script_completeness_reasons": list(completeness_after_repair.get("reasons", [])),
-                "fallback_modes_by_stage": dict(getattr(self, "_fallback_modes_by_stage", {})),
-                "parse_truncation_pressure": round(self._current_truncation_pressure(), 4),
-                "parse_truncation_pressure_peak": round(
-                    float(getattr(self, "_truncation_pressure_peak", 0.0)),
-                    4,
-                ),
-                "truncation_pressure_adaptive_events": int(
-                    getattr(self, "_truncation_pressure_adaptive_events", 0)
-                ),
-                "truncation_pressure_presplit_events": int(
-                    getattr(self, "_truncation_pressure_presplit_events", 0)
-                ),
+                "schema_validation_failures": int(getattr(self, "_schema_validation_failures", 0)),
+                "script_completeness_before_repair": dict(structural_report.get("completeness", {})),
+                "script_completeness_after_repair": dict(structural_report.get("completeness", {})),
+                "script_completeness_pass": bool(structural_report.get("pass", False)),
+                "script_completeness_reasons": list(structural_report.get("notes", [])),
+                "source_validation_mode": self.config.source_validation_mode,
+                "quality_report_path": quality_report_path,
+                "script_quality_report_path": quality_report_path,
+                "quality_gate_pass": bool(quality_report.get("pass", False)),
+                "editorial_pass": bool(quality_editorial_report.get("pass", False)),
+                "fact_guard_pass": bool(fact_guard_final_report.get("pass", False)),
+                "fact_guard_warning_count": int(quality_report.get("fact_guard_warning_count", 0)),
+                "fact_guard_repairable_count": int(quality_report.get("fact_guard_repairable_count", 0)),
+                "coverage_metrics": dict(final_artifact.get("coverage", {}) or {}),
+                "artifact_paths": artifact_paths,
                 "run_manifest_path": run_manifest_path(
                     checkpoint_dir=self.config.checkpoint_dir,
                     episode_id=resolved_episode_id,
@@ -2854,157 +2960,38 @@ class ScriptGenerator:
                 ),
             }
             run_summary.update(source_validation)
-            # Persist rich telemetry for debugging and orchestrated retries.
             _atomic_write_text(run_summary_path, json.dumps(run_summary, indent=2, ensure_ascii=False))
-            self.logger.info("script_generation_done", output_path=output_path, word_count=final_wc)
             return ScriptGenerationResult(
                 episode_id=resolved_episode_id,
                 output_path=output_path,
-                line_count=len(lines),
-                word_count=final_wc,
+                line_count=len(public_payload.get("lines", [])),
+                word_count=count_words_from_lines(public_payload.get("lines", [])),
                 checkpoint_path=store.checkpoint_path,
                 run_summary_path=run_summary_path,
                 script_retry_rate=run_summary["script_retry_rate"],
                 invalid_schema_rate=run_summary["invalid_schema_rate"],
-                schema_validation_failures=run_summary["schema_validation_failures"],
+                schema_validation_failures=int(run_summary["schema_validation_failures"]),
+                quality_report_path=quality_report_path,
+                artifact_paths=artifact_paths,
             )
         except InterruptedError:
             if state:
-                try:
-                    # Persist interruption metadata before bubbling up so
-                    # orchestrators can resume without ambiguity.
-                    state["status"] = "interrupted"
-                    state["failure_kind"] = ERROR_KIND_INTERRUPTED
-                    state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
-                    state["failed_at"] = int(time.time())
-                    state["last_success_at"] = int(time.time())
-                    store.save(state)
-                except Exception:
-                    pass
+                state["status"] = "interrupted"
+                state["failure_kind"] = ERROR_KIND_INTERRUPTED
+                state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
+                state["last_success_at"] = int(time.time())
+                store.save(state)
             failure_summary = {
                 "component": "script_generator",
                 "episode_id": resolved_episode_id,
-                "run_token": run_token,
+                "run_token": effective_run_token,
                 "status": "interrupted",
-                "script_started_at": int(started),
-                "script_completed_at": None,
-                "elapsed_seconds": round(time.time() - started, 2),
-                "requests_made": self.client.requests_made,
-                "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
-                "script_retry_rate": round(
-                    float(getattr(self.client, "script_retries_total", 0))
-                    / float(max(1, getattr(self.client, "requests_made", 0))),
-                    4,
-                ),
-                "phase_seconds": _phase_seconds_with_generation(phase_seconds),
-                "source_validation_mode": self.config.source_validation_mode,
-                "schema_validation_failures": int(getattr(self, "_schema_validation_failures", 0)),
-                "schema_repair_successes": int(getattr(self, "_schema_repair_successes", 0)),
-                "schema_repair_failures": int(getattr(self, "_schema_repair_failures", 0)),
-                "schema_salvage_attempts": int(getattr(self, "_schema_salvage_attempts", 0)),
-                "schema_salvage_successes": int(getattr(self, "_schema_salvage_successes", 0)),
-                "schema_salvage_failures": int(getattr(self, "_schema_salvage_failures", 0)),
-                "script_json_parse_failures": int(getattr(self.client, "script_json_parse_failures", 0)),
-                "script_empty_output_events": int(getattr(self.client, "script_empty_output_events", 0)),
-                "script_empty_output_retries": int(getattr(self.client, "script_empty_output_retries", 0)),
-                "script_empty_output_failures": int(getattr(self.client, "script_empty_output_failures", 0)),
-                "script_empty_output_by_stage": dict(getattr(self.client, "script_empty_output_by_stage", {})),
-                "schema_validation_failures_by_stage": dict(
-                    getattr(self, "_schema_validation_failures_by_stage", {})
-                ),
-                "schema_repair_successes_by_stage": dict(
-                    getattr(self, "_schema_repair_successes_by_stage", {})
-                ),
-                "schema_repair_failures_by_stage": dict(
-                    getattr(self, "_schema_repair_failures_by_stage", {})
-                ),
-                "schema_salvage_attempts_by_stage": dict(
-                    getattr(self, "_schema_salvage_attempts_by_stage", {})
-                ),
-                "schema_salvage_successes_by_stage": dict(
-                    getattr(self, "_schema_salvage_successes_by_stage", {})
-                ),
-                "schema_salvage_failures_by_stage": dict(
-                    getattr(self, "_schema_salvage_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_stage": dict(
-                    getattr(self.client, "script_json_parse_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                ),
-                "script_json_parse_repair_successes_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_successes_by_kind", {})
-                ),
-                "script_json_parse_repair_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_kind": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_kind", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_kind", {})),
-                ),
-                "schema_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                    dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                ),
-                "repair_attempts_by_stage": _sum_int_maps(
-                    _sum_int_maps(
-                        dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                        dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                    ),
-                    _sum_int_maps(
-                        dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                        dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                    ),
-                ),
-                "invalid_schema_rate": round(
-                    float(
-                        int(getattr(self, "_schema_validation_failures", 0))
-                        + int(getattr(self.client, "script_json_parse_failures", 0))
-                    )
-                    / float(max(1, self.client.requests_made)),
-                    4,
-                ),
-                "stuck_abort": bool(getattr(self, "_no_progress_abort", False)),
-                "failure_kind": ERROR_KIND_INTERRUPTED,
                 "failed_stage": str(getattr(self, "_last_stage", "") or "unknown"),
-                "chunk_subsplit_recoveries": int(getattr(self, "_chunk_subsplit_recoveries", 0)),
-                "adaptive_subpart_failures": int(getattr(self, "_adaptive_subpart_failures", 0)),
-                "adaptive_subpart_recoveries": int(getattr(self, "_adaptive_subpart_recoveries", 0)),
-                "adaptive_subpart_skips": int(getattr(self, "_adaptive_subpart_skips", 0)),
-                "continuation_recovery_attempts": int(getattr(self, "_continuation_recovery_attempts", 0)),
-                "continuation_recovery_successes": int(
-                    getattr(self, "_continuation_recovery_successes", 0)
-                ),
-                "continuation_fallback_closures": int(
-                    getattr(self, "_continuation_fallback_closures", 0)
-                ),
-                "continuation_fallback_extensions": int(
-                    getattr(self, "_continuation_fallback_extensions", 0)
-                ),
-                "script_completeness_before_repair": dict(completeness_before_repair),
-                "script_completeness_after_repair": dict(completeness_after_repair),
-                "script_completeness_pass": bool(completeness_after_repair.get("pass", False)),
-                "script_completeness_reasons": list(completeness_after_repair.get("reasons", [])),
-                "fallback_modes_by_stage": dict(getattr(self, "_fallback_modes_by_stage", {})),
-                "parse_truncation_pressure": round(self._current_truncation_pressure(), 4),
-                "parse_truncation_pressure_peak": round(
-                    float(getattr(self, "_truncation_pressure_peak", 0.0)),
-                    4,
-                ),
-                "truncation_pressure_adaptive_events": int(
-                    getattr(self, "_truncation_pressure_adaptive_events", 0)
-                ),
-                "truncation_pressure_presplit_events": int(
-                    getattr(self, "_truncation_pressure_presplit_events", 0)
-                ),
-                "truncation_recovery_fallback_used": bool(
-                    getattr(self, "_truncation_recovery_fallback_used", False)
-                ),
+                "failure_kind": ERROR_KIND_INTERRUPTED,
+                "elapsed_seconds": round(time.time() - started, 2),
+                "phase_seconds": _phase_seconds_with_generation(phase_seconds),
+                "quality_report_path": quality_report_path,
+                "artifact_paths": artifact_paths,
                 "run_manifest_path": run_manifest_path(
                     checkpoint_dir=self.config.checkpoint_dir,
                     episode_id=resolved_episode_id,
@@ -3018,157 +3005,39 @@ class ScriptGenerator:
             _atomic_write_text(run_summary_path, json.dumps(failure_summary, indent=2, ensure_ascii=False))
             raise
         except Exception as exc:
-            # Store a failure summary for post-mortem before re-raising.
-            schema_validation_failures = int(getattr(self, "_schema_validation_failures", 0))
-            script_json_parse_failures = int(getattr(self.client, "script_json_parse_failures", 0))
-            empty_output_failures = int(getattr(self.client, "script_empty_output_failures", 0))
-            no_progress_abort = bool(getattr(self, "_no_progress_abort", False))
             failure_kind = ERROR_KIND_UNKNOWN
             if isinstance(exc, ScriptOperationError):
                 failure_kind = exc.error_kind
-            elif empty_output_failures > 0 and self._is_empty_output_error(exc):
-                failure_kind = ERROR_KIND_OPENAI_EMPTY_OUTPUT
-            elif no_progress_abort:
-                failure_kind = ERROR_KIND_STUCK
-            elif empty_output_failures > 0:
-                failure_kind = ERROR_KIND_OPENAI_EMPTY_OUTPUT
-            elif (schema_validation_failures + script_json_parse_failures) > 0:
-                # Group parse/schema drift under a stable invalid-schema bucket
-                # for retry policy and incident trend analysis.
+            elif int(getattr(self.client, "script_json_parse_failures", 0)) > 0:
                 failure_kind = ERROR_KIND_INVALID_SCHEMA
             if state:
-                try:
-                    state["status"] = "failed"
-                    state["failure_kind"] = failure_kind
-                    state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
-                    state["failed_at"] = int(time.time())
-                    state["last_success_at"] = int(time.time())
-                    store.save(state)
-                except Exception:
-                    pass
+                state["status"] = "failed"
+                state["failure_kind"] = failure_kind
+                state["failed_stage"] = str(getattr(self, "_last_stage", "") or "unknown")
+                state["last_success_at"] = int(time.time())
+                store.save(state)
             failure_summary = {
                 "component": "script_generator",
                 "episode_id": resolved_episode_id,
-                "run_token": run_token,
+                "run_token": effective_run_token,
                 "status": "failed",
-                "script_started_at": int(started),
-                "script_completed_at": None,
+                "failed_stage": str(getattr(self, "_last_stage", "") or "unknown"),
+                "failure_kind": failure_kind,
                 "elapsed_seconds": round(time.time() - started, 2),
-                "requests_made": self.client.requests_made,
-                "estimated_cost_usd": round(self.client.estimated_cost_usd, 4),
+                "phase_seconds": _phase_seconds_with_generation(phase_seconds),
+                "quality_report_path": quality_report_path,
+                "artifact_paths": artifact_paths,
                 "script_retry_rate": round(
                     float(getattr(self.client, "script_retries_total", 0))
                     / float(max(1, getattr(self.client, "requests_made", 0))),
                     4,
                 ),
-                "phase_seconds": _phase_seconds_with_generation(phase_seconds),
-                "source_validation_mode": self.config.source_validation_mode,
-                "schema_validation_failures": schema_validation_failures,
-                "schema_repair_successes": int(getattr(self, "_schema_repair_successes", 0)),
-                "schema_repair_failures": int(getattr(self, "_schema_repair_failures", 0)),
-                "schema_salvage_attempts": int(getattr(self, "_schema_salvage_attempts", 0)),
-                "schema_salvage_successes": int(getattr(self, "_schema_salvage_successes", 0)),
-                "schema_salvage_failures": int(getattr(self, "_schema_salvage_failures", 0)),
-                "script_json_parse_failures": script_json_parse_failures,
-                "script_empty_output_events": int(getattr(self.client, "script_empty_output_events", 0)),
-                "script_empty_output_retries": int(getattr(self.client, "script_empty_output_retries", 0)),
-                "script_empty_output_failures": int(getattr(self.client, "script_empty_output_failures", 0)),
-                "script_empty_output_by_stage": dict(getattr(self.client, "script_empty_output_by_stage", {})),
-                "schema_validation_failures_by_stage": dict(
-                    getattr(self, "_schema_validation_failures_by_stage", {})
-                ),
-                "schema_repair_successes_by_stage": dict(
-                    getattr(self, "_schema_repair_successes_by_stage", {})
-                ),
-                "schema_repair_failures_by_stage": dict(
-                    getattr(self, "_schema_repair_failures_by_stage", {})
-                ),
-                "schema_salvage_attempts_by_stage": dict(
-                    getattr(self, "_schema_salvage_attempts_by_stage", {})
-                ),
-                "schema_salvage_successes_by_stage": dict(
-                    getattr(self, "_schema_salvage_successes_by_stage", {})
-                ),
-                "schema_salvage_failures_by_stage": dict(
-                    getattr(self, "_schema_salvage_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_stage": dict(
-                    getattr(self.client, "script_json_parse_failures_by_stage", {})
-                ),
-                "script_json_parse_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                ),
-                "script_json_parse_repair_successes_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_successes_by_kind", {})
-                ),
-                "script_json_parse_repair_failures_by_kind": dict(
-                    getattr(self.client, "script_json_parse_repair_failures_by_kind", {})
-                ),
-                "script_json_parse_repair_attempts_by_kind": _sum_int_maps(
-                    dict(getattr(self.client, "script_json_parse_repair_successes_by_kind", {})),
-                    dict(getattr(self.client, "script_json_parse_repair_failures_by_kind", {})),
-                ),
-                "schema_repair_attempts_by_stage": _sum_int_maps(
-                    dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                    dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                ),
-                "repair_attempts_by_stage": _sum_int_maps(
-                    _sum_int_maps(
-                        dict(getattr(self.client, "script_json_parse_repair_successes_by_stage", {})),
-                        dict(getattr(self.client, "script_json_parse_repair_failures_by_stage", {})),
-                    ),
-                    _sum_int_maps(
-                        dict(getattr(self, "_schema_repair_successes_by_stage", {})),
-                        dict(getattr(self, "_schema_repair_failures_by_stage", {})),
-                    ),
-                ),
                 "invalid_schema_rate": round(
-                    float(
-                        schema_validation_failures + script_json_parse_failures
-                    )
-                    / float(max(1, self.client.requests_made)),
+                    float(getattr(self.client, "script_json_parse_failures", 0))
+                    / float(max(1, getattr(self.client, "requests_made", 0))),
                     4,
                 ),
-                "stuck_abort": no_progress_abort,
-                "failure_kind": failure_kind,
-                "failed_stage": str(getattr(self, "_last_stage", "") or "unknown"),
-                "chunk_subsplit_recoveries": int(getattr(self, "_chunk_subsplit_recoveries", 0)),
-                "adaptive_subpart_failures": int(getattr(self, "_adaptive_subpart_failures", 0)),
-                "adaptive_subpart_recoveries": int(getattr(self, "_adaptive_subpart_recoveries", 0)),
-                "adaptive_subpart_skips": int(getattr(self, "_adaptive_subpart_skips", 0)),
-                "continuation_recovery_attempts": int(getattr(self, "_continuation_recovery_attempts", 0)),
-                "continuation_recovery_successes": int(
-                    getattr(self, "_continuation_recovery_successes", 0)
-                ),
-                "continuation_fallback_closures": int(
-                    getattr(self, "_continuation_fallback_closures", 0)
-                ),
-                "continuation_fallback_extensions": int(
-                    getattr(self, "_continuation_fallback_extensions", 0)
-                ),
-                "script_completeness_before_repair": dict(completeness_before_repair),
-                "script_completeness_after_repair": dict(completeness_after_repair),
-                "script_completeness_pass": bool(completeness_after_repair.get("pass", False)),
-                "script_completeness_reasons": list(completeness_after_repair.get("reasons", [])),
-                "fallback_modes_by_stage": dict(getattr(self, "_fallback_modes_by_stage", {})),
-                "parse_truncation_pressure": round(self._current_truncation_pressure(), 4),
-                "parse_truncation_pressure_peak": round(
-                    float(getattr(self, "_truncation_pressure_peak", 0.0)),
-                    4,
-                ),
-                "truncation_pressure_adaptive_events": int(
-                    getattr(self, "_truncation_pressure_adaptive_events", 0)
-                ),
-                "truncation_pressure_presplit_events": int(
-                    getattr(self, "_truncation_pressure_presplit_events", 0)
-                ),
-                "truncation_recovery_fallback_used": bool(
-                    getattr(self, "_truncation_recovery_fallback_used", False)
-                ),
+                "schema_validation_failures": int(getattr(self, "_schema_validation_failures", 0)),
                 "run_manifest_path": run_manifest_path(
                     checkpoint_dir=self.config.checkpoint_dir,
                     episode_id=resolved_episode_id,
@@ -3184,3 +3053,26 @@ class ScriptGenerator:
         finally:
             store.release_lock()
 
+    def generate(
+        self,
+        *,
+        source_text: str,
+        output_path: str,
+        episode_id: str | None = None,
+        resume: bool = False,
+        resume_force: bool = False,
+        force_unlock: bool = False,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        run_token: Optional[str] = None,
+    ) -> ScriptGenerationResult:
+        """Generate final script JSON with the redesigned pipeline only."""
+        return self._generate_redesigned(
+            source_text=source_text,
+            output_path=output_path,
+            episode_id=episode_id,
+            resume=resume,
+            resume_force=resume_force,
+            force_unlock=force_unlock,
+            cancel_check=cancel_check,
+            run_token=run_token,
+        )

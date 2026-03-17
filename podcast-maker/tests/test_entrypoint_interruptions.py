@@ -48,51 +48,6 @@ class _FakeClient:
     script_json_parse_failures = 0
 
 
-class _RepairingScriptClient(_FakeClient):
-    """Returns a complete recap+farewell script for successful auto-repair paths."""
-
-    def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
-        return {
-            "lines": [
-                {
-                    "speaker": "Ana",
-                    "role": "Host1",
-                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Measured | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
-                    "text": "En resumen, este episodio organiza ideas con pasos claros.",
-                },
-                {
-                    "speaker": "Luis",
-                    "role": "Host2",
-                    "instructions": "Voice Affect: Bright and friendly | Tone: Conversational | Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief",
-                    "text": "Gracias por escuchar, nos vemos en la proxima.",
-                },
-            ]
-        }
-
-
-class _RepairStillFailClient(_FakeClient):
-    """Returns an intentionally incomplete correction to keep gate failing."""
-
-    def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
-        return {
-            "lines": [
-                {
-                    "speaker": "Ana",
-                    "role": "Host1",
-                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Measured | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
-                    "text": "Version corregida parcial sin cierre todavia.",
-                }
-            ]
-        }
-
-
-class _RepairThrowsClient(_FakeClient):
-    """Raises during repair to validate revert-to-original behavior."""
-
-    def generate_script_json(self, **kwargs):  # noqa: ANN003, ANN201
-        raise RuntimeError("repair failed")
-
-
 class EntryPointInterruptionTests(unittest.TestCase):
     """Coverage for entrypoint-level resilience and fallback contracts."""
 
@@ -482,8 +437,6 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertNotEqual(str(payload.get("run_token", "")).strip(), "stale-token")
             phase_seconds = payload.get("phase_seconds", {})
             self.assertIn("quality_eval", phase_seconds)
-            self.assertIn("repair", phase_seconds)
-            self.assertIn("quality_repair", phase_seconds)
 
     def test_make_script_missing_source_writes_fallback_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -529,8 +482,6 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertTrue(str(payload.get("run_token", "")).strip())
             phase_seconds = payload.get("phase_seconds", {})
             self.assertIn("quality_eval", phase_seconds)
-            self.assertIn("repair", phase_seconds)
-            self.assertIn("quality_repair", phase_seconds)
 
     def test_make_script_operation_error_without_summary_writes_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -604,8 +555,6 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertTrue(str(payload.get("run_token", "")).strip())
             phase_seconds = payload.get("phase_seconds", {})
             self.assertIn("quality_eval", phase_seconds)
-            self.assertIn("repair", phase_seconds)
-            self.assertIn("quality_repair", phase_seconds)
 
     def test_make_script_source_too_short_propagates_failure_kind(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -751,6 +700,10 @@ class EntryPointInterruptionTests(unittest.TestCase):
                     },
                     f,
                 )
+            quality_report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
+            os.makedirs(os.path.dirname(quality_report_path), exist_ok=True)
+            with open(quality_report_path, "w", encoding="utf-8") as f:
+                json.dump({"pass": False, "reasons": ["host2_not_pushing"]}, f)
             fake_result = SimpleNamespace(
                 output_path=args.output_path,
                 line_count=1,
@@ -759,6 +712,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                 run_summary_path=os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json"),
                 script_retry_rate=0.0,
                 invalid_schema_rate=0.0,
+                quality_report_path=quality_report_path,
             )
             with mock.patch.dict(
                 os.environ,
@@ -801,8 +755,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                         rc = make_script.main()
             self.assertEqual(rc, 1)
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
-            report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
-            self.assertTrue(os.path.exists(report_path))
+            self.assertTrue(os.path.exists(quality_report_path))
 
     def test_make_script_quality_gate_script_side_warn_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -839,6 +792,10 @@ class EntryPointInterruptionTests(unittest.TestCase):
                     },
                     f,
                 )
+            quality_report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
+            os.makedirs(os.path.dirname(quality_report_path), exist_ok=True)
+            with open(quality_report_path, "w", encoding="utf-8") as f:
+                json.dump({"pass": False, "reasons": ["host2_not_pushing"]}, f)
             fake_result = SimpleNamespace(
                 output_path=args.output_path,
                 line_count=1,
@@ -847,6 +804,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                 run_summary_path=os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json"),
                 script_retry_rate=0.0,
                 invalid_schema_rate=0.0,
+                quality_report_path=quality_report_path,
             )
             with mock.patch.dict(
                 os.environ,
@@ -889,10 +847,9 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                         rc = make_script.main()
             self.assertEqual(rc, 0)
             self.assertIsNone(append_slo.call_args.kwargs.get("failure_kind"))
-            report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
-            self.assertTrue(os.path.exists(report_path))
+            self.assertTrue(os.path.exists(quality_report_path))
 
-    def test_make_script_quality_gate_warn_applies_last_correction_even_if_still_failing(self) -> None:
+    def test_make_script_quality_gate_missing_generator_report_fails_in_warn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = argparse.Namespace(
                 input_path=os.path.join(tmp, "source.txt"),
@@ -914,8 +871,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
             script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
             audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
             os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-            # Seed an original script artifact so we can verify warn-mode repair
-            # does not corrupt successful existing content on failed corrections.
+            # Seed an original script artifact so we can verify warn-mode keeps
+            # the generated output untouched when the quality report fails.
             with open(args.output_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
@@ -930,29 +887,21 @@ class EntryPointInterruptionTests(unittest.TestCase):
                     },
                     f,
                 )
-            checkpoint_path = os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json")
-            run_summary_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json")
-            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-            with open(checkpoint_path, "w", encoding="utf-8") as f:
-                json.dump({"lines": [], "current_word_count": 0, "status": "completed"}, f)
-            with open(run_summary_path, "w", encoding="utf-8") as f:
-                json.dump({"line_count": 1, "word_count": 3, "status": "completed"}, f)
             fake_result = SimpleNamespace(
                 output_path=args.output_path,
                 line_count=1,
                 word_count=3,
-                checkpoint_path=checkpoint_path,
-                run_summary_path=run_summary_path,
+                checkpoint_path=os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json"),
+                run_summary_path=os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json"),
                 script_retry_rate=0.0,
                 invalid_schema_rate=0.0,
+                quality_report_path="",
             )
             with mock.patch.dict(
                 os.environ,
                 {
                     "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "warn",
                     "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                    "SCRIPT_QUALITY_GATE_AUTO_REPAIR": "1",
-                    "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS": "1",
                 },
                 clear=False,
             ):
@@ -973,124 +922,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                         with mock.patch.object(
                                             make_script.OpenAIClient,
                                             "from_configs",
-                                            return_value=_RepairStillFailClient(),
-                                        ):
-                                            # Repair client returns still-failing
-                                            # payloads to force warn-path fallback.
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script, "ScriptGenerator", return_value=fake_generator
-                                            ):
-                                                with mock.patch.object(make_script, "append_slo_event") as append_slo:
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "evaluate_slo_windows",
-                                                        return_value={"should_rollback": False},
-                                                    ):
-                                                        rc = make_script.main()
-            self.assertEqual(rc, 0)
-            self.assertIsNone(append_slo.call_args.kwargs.get("failure_kind"))
-            with open(args.output_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            text = payload["lines"][0]["text"]
-            # Original content remains unchanged when warn-mode repair cannot
-            # produce a valid improved script.
-            self.assertEqual(text, "Texto corto original")
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                checkpoint_payload = json.load(f)
-            self.assertEqual(checkpoint_payload.get("status"), "completed")
-            with open(run_summary_path, "r", encoding="utf-8") as f:
-                summary_payload = json.load(f)
-            self.assertEqual(summary_payload.get("line_count"), 1)
-            self.assertGreaterEqual(int(summary_payload.get("word_count", 0)), 1)
-            self.assertEqual(summary_payload.get("status"), "completed")
-            self.assertEqual(summary_payload.get("script_gate_action_effective"), "warn")
-            self.assertTrue(bool(summary_payload.get("quality_gate_executed")))
-            # Script-only entrypoint should never mark audio handoff fields.
-            self.assertFalse(bool(summary_payload.get("handoff_to_audio_started")))
-            self.assertFalse(bool(summary_payload.get("handoff_to_audio_completed")))
-
-    def test_make_script_quality_gate_enforce_marks_artifacts_failed_with_last_correction(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = argparse.Namespace(
-                input_path=os.path.join(tmp, "source.txt"),
-                output_path=os.path.join(tmp, "episode.json"),
-                profile="short",
-                target_minutes=None,
-                words_per_min=None,
-                min_words=None,
-                max_words=None,
-                resume=False,
-                resume_force=False,
-                force_unlock=False,
-                verbose=False,
-                debug=False,
-                dry_run_cleanup=False,
-                force_clean=False,
-            )
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-            with open(args.output_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "lines": [
-                            {
-                                "speaker": "Ana",
-                                "role": "Host1",
-                                "instructions": "Voice Affect: Warm | Tone: Conversational | Pacing: Brisk",
-                                "text": "Texto corto original",
-                            }
-                        ]
-                    },
-                    f,
-                )
-            checkpoint_path = os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json")
-            run_summary_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json")
-            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-            with open(checkpoint_path, "w", encoding="utf-8") as f:
-                json.dump({"lines": [], "current_word_count": 0, "status": "completed"}, f)
-            with open(run_summary_path, "w", encoding="utf-8") as f:
-                json.dump({"line_count": 1, "word_count": 3, "status": "completed"}, f)
-            fake_result = SimpleNamespace(
-                output_path=args.output_path,
-                line_count=1,
-                word_count=3,
-                checkpoint_path=checkpoint_path,
-                run_summary_path=run_summary_path,
-                script_retry_rate=0.0,
-                invalid_schema_rate=0.0,
-            )
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
-                    "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                    "SCRIPT_QUALITY_GATE_AUTO_REPAIR": "1",
-                    "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS": "1",
-                },
-                clear=False,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para una prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(deleted_files=0, deleted_bytes=0, kept_files=0),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_RepairStillFailClient(),
+                                            return_value=_FakeClient(),
                                         ):
                                             fake_generator = mock.Mock()
                                             fake_generator.generate.return_value = fake_result
@@ -1106,24 +938,8 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                         rc = make_script.main()
             self.assertEqual(rc, 1)
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
-            with open(args.output_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            text = payload["lines"][0]["text"]
-            self.assertEqual(text, "Texto corto original")
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                checkpoint_payload = json.load(f)
-            self.assertEqual(checkpoint_payload.get("status"), "failed")
-            self.assertEqual(checkpoint_payload.get("lines"), [])
-            with open(run_summary_path, "r", encoding="utf-8") as f:
-                summary_payload = json.load(f)
-            self.assertEqual(summary_payload.get("status"), "failed")
-            self.assertEqual(summary_payload.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
-            phase_seconds = summary_payload.get("phase_seconds", {})
-            self.assertIn("quality_eval", phase_seconds)
-            self.assertIn("repair", phase_seconds)
-            self.assertIn("quality_repair", phase_seconds)
 
-    def test_make_script_quality_gate_warn_keeps_original_when_repair_fails(self) -> None:
+    def test_make_script_quality_gate_missing_generator_report_fails_in_enforce(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = argparse.Namespace(
                 input_path=os.path.join(tmp, "source.txt"),
@@ -1144,18 +960,21 @@ class EntryPointInterruptionTests(unittest.TestCase):
             script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
             script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
             audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            original_payload = {
-                "lines": [
-                    {
-                        "speaker": "Ana",
-                        "role": "Host1",
-                        "instructions": "Voice Affect: Warm | Tone: Conversational | Pacing: Brisk",
-                        "text": "Texto corto original",
-                    }
-                ]
-            }
+            os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
             with open(args.output_path, "w", encoding="utf-8") as f:
-                json.dump(original_payload, f)
+                json.dump(
+                    {
+                        "lines": [
+                            {
+                                "speaker": "Ana",
+                                "role": "Host1",
+                                "instructions": "Voice Affect: Warm | Tone: Conversational | Pacing: Brisk",
+                                "text": "Texto corto original",
+                            }
+                        ]
+                    },
+                    f,
+                )
             fake_result = SimpleNamespace(
                 output_path=args.output_path,
                 line_count=1,
@@ -1164,14 +983,13 @@ class EntryPointInterruptionTests(unittest.TestCase):
                 run_summary_path=os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json"),
                 script_retry_rate=0.0,
                 invalid_schema_rate=0.0,
+                quality_report_path="",
             )
             with mock.patch.dict(
                 os.environ,
                 {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "warn",
+                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
                     "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                    "SCRIPT_QUALITY_GATE_AUTO_REPAIR": "1",
-                    "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS": "1",
                 },
                 clear=False,
             ):
@@ -1192,24 +1010,26 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                         with mock.patch.object(
                                             make_script.OpenAIClient,
                                             "from_configs",
-                                            return_value=_RepairThrowsClient(),
+                                            return_value=_FakeClient(),
                                         ):
                                             fake_generator = mock.Mock()
                                             fake_generator.generate.return_value = fake_result
                                             with mock.patch.object(
                                                 make_script, "ScriptGenerator", return_value=fake_generator
                                             ):
-                                                with mock.patch.object(make_script, "append_slo_event"):
+                                                with mock.patch.object(make_script, "append_slo_event") as append_slo:
                                                     with mock.patch.object(
                                                         make_script,
                                                         "evaluate_slo_windows",
                                                         return_value={"should_rollback": False},
                                                     ):
                                                         rc = make_script.main()
-            self.assertEqual(rc, 0)
-            with open(args.output_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            self.assertEqual(payload["lines"][0]["text"], original_payload["lines"][0]["text"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
+            with open(fake_result.run_summary_path, "r", encoding="utf-8") as f:
+                summary_payload = json.load(f)
+            self.assertEqual(summary_payload.get("status"), "failed")
+            self.assertEqual(summary_payload.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
 
     def test_make_script_success_retry_rate_uses_client_totals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1459,101 +1279,6 @@ class EntryPointInterruptionTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_SCRIPT_QUALITY)
 
-    def test_make_script_quality_gate_enforce_repairs_and_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = argparse.Namespace(
-                input_path=os.path.join(tmp, "source.txt"),
-                output_path=os.path.join(tmp, "episode.json"),
-                profile="short",
-                target_minutes=None,
-                words_per_min=None,
-                min_words=None,
-                max_words=None,
-                resume=False,
-                resume_force=False,
-                force_unlock=False,
-                verbose=False,
-                debug=False,
-                dry_run_cleanup=False,
-                force_clean=False,
-            )
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            with open(args.output_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "lines": [
-                            {
-                                "speaker": "Ana",
-                                "role": "Host1",
-                                "instructions": "Voice Affect: Warm | Tone: Conversational | Pacing: Brisk",
-                                "text": "Texto corto",
-                            }
-                        ]
-                    },
-                    f,
-                )
-            fake_result = SimpleNamespace(
-                output_path=args.output_path,
-                line_count=1,
-                word_count=2,
-                checkpoint_path=os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json"),
-                run_summary_path=os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json"),
-                script_retry_rate=0.0,
-                invalid_schema_rate=0.0,
-            )
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
-                    "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                    "SCRIPT_QUALITY_MIN_WORDS_RATIO": "0.0",
-                    "SCRIPT_QUALITY_GATE_AUTO_REPAIR": "1",
-                    "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS": "1",
-                },
-                clear=False,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para una prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(deleted_files=0, deleted_bytes=0, kept_files=0),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_RepairingScriptClient(),
-                                        ):
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script, "ScriptGenerator", return_value=fake_generator
-                                            ):
-                                                with mock.patch.object(make_script, "append_slo_event") as append_slo:
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "evaluate_slo_windows",
-                                                        return_value={"should_rollback": False},
-                                                    ):
-                                                        rc = make_script.main()
-            self.assertEqual(rc, 0)
-            self.assertIsNone(append_slo.call_args.kwargs.get("failure_kind"))
-            with open(args.output_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            joined = " ".join(str(line.get("text", "")) for line in payload.get("lines", []))
-            lowered = joined.lower()
-            self.assertTrue(("nos quedamos con" in lowered) or ("en resumen" in lowered))
-            self.assertIn("Gracias por escuchar", joined)
-
     def test_make_podcast_marks_stuck_abort_from_structured_batch_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             script_path = os.path.join(tmp, "script.json")
@@ -1732,18 +1457,29 @@ class EntryPointInterruptionTests(unittest.TestCase):
                         ):
                             with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                                 with mock.patch.object(make_podcast, "TTSSynthesizer") as synth_cls:
-                                    with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
-                                        with mock.patch.object(
-                                            make_podcast,
-                                            "evaluate_slo_windows",
-                                            return_value={"should_rollback": False},
-                                        ):
-                                            with mock.patch.dict(
-                                                os.environ,
-                                                {"SCRIPT_QUALITY_GATE_ACTION": "off"},
-                                                clear=False,
+                                    with mock.patch.object(
+                                        make_podcast.StructuralGate,
+                                        "evaluate",
+                                        return_value={
+                                            "pass": False,
+                                            "notes": ["too_short"],
+                                            "checks": {},
+                                            "line_count": 1,
+                                            "word_count": 2,
+                                        },
+                                    ):
+                                        with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
+                                            with mock.patch.object(
+                                                make_podcast,
+                                                "evaluate_slo_windows",
+                                                return_value={"should_rollback": False},
                                             ):
-                                                rc = make_podcast.main()
+                                                with mock.patch.dict(
+                                                    os.environ,
+                                                    {"SCRIPT_QUALITY_GATE_ACTION": "off"},
+                                                    clear=False,
+                                                ):
+                                                    rc = make_podcast.main()
             self.assertEqual(rc, 1)
             synth_cls.assert_not_called()
             self.assertEqual(append_slo.call_args.kwargs.get("failure_kind"), ERROR_KIND_UNKNOWN)
@@ -1968,21 +1704,32 @@ class EntryPointInterruptionTests(unittest.TestCase):
                         ):
                             with mock.patch.object(make_podcast, "AudioMixer") as mixer_cls:
                                 with mock.patch.object(make_podcast, "TTSSynthesizer") as synth_cls:
-                                    with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
-                                        with mock.patch.object(
-                                            make_podcast,
-                                            "evaluate_slo_windows",
-                                            return_value={"should_rollback": False},
-                                        ):
-                                            with mock.patch.dict(
-                                                os.environ,
-                                                {
-                                                    "SCRIPT_QUALITY_GATE_ACTION": "enforce",
-                                                    "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                                                },
-                                                clear=False,
+                                    with mock.patch.object(
+                                        make_podcast.StructuralGate,
+                                        "evaluate",
+                                        return_value={
+                                            "pass": False,
+                                            "notes": ["too_short"],
+                                            "checks": {},
+                                            "line_count": 1,
+                                            "word_count": 2,
+                                        },
+                                    ):
+                                        with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
+                                            with mock.patch.object(
+                                                make_podcast,
+                                                "evaluate_slo_windows",
+                                                return_value={"should_rollback": False},
                                             ):
-                                                rc = make_podcast.main()
+                                                with mock.patch.dict(
+                                                    os.environ,
+                                                    {
+                                                        "SCRIPT_QUALITY_GATE_ACTION": "enforce",
+                                                        "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
+                                                    },
+                                                    clear=False,
+                                                ):
+                                                    rc = make_podcast.main()
             self.assertEqual(rc, 4)
             # Enforce mode blocks all downstream audio stages when quality fails.
             mixer_cls.assert_not_called()
@@ -2070,21 +1817,32 @@ class EntryPointInterruptionTests(unittest.TestCase):
                         ):
                             with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                                 with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
-                                    with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
-                                        with mock.patch.object(
-                                            make_podcast,
-                                            "evaluate_slo_windows",
-                                            return_value={"should_rollback": False},
-                                        ):
-                                            with mock.patch.dict(
-                                                os.environ,
-                                                {
-                                                    "SCRIPT_QUALITY_GATE_ACTION": "warn",
-                                                    "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
-                                                },
-                                                clear=False,
+                                    with mock.patch.object(
+                                        make_podcast.StructuralGate,
+                                        "evaluate",
+                                        return_value={
+                                            "pass": False,
+                                            "notes": ["too_short"],
+                                            "checks": {},
+                                            "line_count": 1,
+                                            "word_count": 2,
+                                        },
+                                    ):
+                                        with mock.patch.object(make_podcast, "append_slo_event") as append_slo:
+                                            with mock.patch.object(
+                                                make_podcast,
+                                                "evaluate_slo_windows",
+                                                return_value={"should_rollback": False},
                                             ):
-                                                rc = make_podcast.main()
+                                                with mock.patch.dict(
+                                                    os.environ,
+                                                    {
+                                                        "SCRIPT_QUALITY_GATE_ACTION": "warn",
+                                                        "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
+                                                    },
+                                                    clear=False,
+                                                ):
+                                                    rc = make_podcast.main()
             self.assertEqual(rc, 0)
             # Warn mode keeps pipeline moving even when quality report fails.
             self.assertTrue(fake_synth.synthesize.called)
@@ -2169,8 +1927,9 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                 with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
                                     with mock.patch.object(
                                         make_podcast,
-                                        "evaluate_script_quality",
-                                    ) as eval_quality:
+                                        "StructuralGate",
+                                    ) as structural_gate_cls:
+                                        structural_gate_cls.return_value.evaluate = mock.Mock()
                                         with mock.patch.object(make_podcast, "append_slo_event"):
                                             with mock.patch.object(
                                                 make_podcast,
@@ -2185,7 +1944,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                                     rc = make_podcast.main()
             self.assertEqual(rc, 0)
             # Gate-off mode should never invoke quality evaluator.
-            eval_quality.assert_not_called()
+            structural_gate_cls.return_value.evaluate.assert_not_called()
             summary_path = os.path.join(checkpoint_dir, "podcast_run_summary.json")
             self.assertTrue(os.path.exists(summary_path))
             with open(summary_path, "r", encoding="utf-8") as f:
@@ -2239,6 +1998,10 @@ class EntryPointInterruptionTests(unittest.TestCase):
                 {"SLO_GATE_MODE": "warn", "SLO_WINDOW_SIZE": "bad", "SLO_REQUIRED_FAILED_WINDOWS": "oops"},
                 clear=False,
             ):
+                quality_report_path = os.path.join(tmp, "ckpt", "ep", "quality_report.json")
+                os.makedirs(os.path.dirname(quality_report_path), exist_ok=True)
+                with open(quality_report_path, "w", encoding="utf-8") as f:
+                    json.dump({"pass": True, "reasons": []}, f)
                 with mock.patch.object(make_script, "parse_args", return_value=args):
                     with mock.patch.object(
                         make_script,
@@ -2265,6 +2028,7 @@ class EntryPointInterruptionTests(unittest.TestCase):
                                         run_summary_path=os.path.join(tmp, "ckpt", "ep", "run_summary.json"),
                                         script_retry_rate=0.0,
                                         invalid_schema_rate=0.0,
+                                        quality_report_path=quality_report_path,
                                     )
                                     with mock.patch.object(
                                         make_script, "ScriptGenerator", return_value=fake_generator

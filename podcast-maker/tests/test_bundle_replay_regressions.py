@@ -62,10 +62,6 @@ class BundleReplayRegressionTests(unittest.TestCase):
         if scenario in {"editorial_warn_only", "quality_interrupted"}:
             script_block["quality_report_path"] = os.path.join(script_run, "quality_report.json")
         if scenario == "quality_interrupted":
-            script_block["quality_report_initial_path"] = os.path.join(
-                script_run,
-                "quality_report_initial.json",
-            )
             script_block["quality_stage_started"] = True
             script_block["quality_stage_finished"] = False
             script_block["quality_stage_interrupted"] = True
@@ -121,17 +117,6 @@ class BundleReplayRegressionTests(unittest.TestCase):
 
         if scenario == "editorial_warn_only":
             self._write_json(
-                os.path.join(script_run, "quality_report_initial.json"),
-                {
-                    "status": "failed",
-                    "pass": False,
-                    "quality_report_phase": "initial",
-                    "quality_stage_started": True,
-                    "quality_stage_finished": False,
-                    "quality_stage_interrupted": False,
-                },
-            )
-            self._write_json(
                 os.path.join(script_run, "quality_report.json"),
                 {
                     "status": "passed",
@@ -141,19 +126,6 @@ class BundleReplayRegressionTests(unittest.TestCase):
                     "reasons": ["overall_score_below_threshold"],
                 },
             )
-        elif scenario == "quality_interrupted":
-            self._write_json(
-                os.path.join(script_run, "quality_report_initial.json"),
-                {
-                    "status": "failed",
-                    "pass": False,
-                    "quality_report_phase": "initial",
-                    "quality_stage_started": True,
-                    "quality_stage_finished": False,
-                    "quality_stage_interrupted": True,
-                },
-            )
-
         with open(script_path, "w", encoding="utf-8") as f:
             json.dump({"lines": []}, f)
         with open(source_path, "w", encoding="utf-8") as f:
@@ -244,15 +216,8 @@ class BundleReplayRegressionTests(unittest.TestCase):
                     elif scenario == "quality_interrupted":
                         self.assertTrue(
                             any(
-                                str(item.get("status", "")).strip().lower() == "found"
-                                and str(item.get("reason", "")) == "initial_only_due_to_interruption"
-                                and str(item.get("archive_name", "")).endswith("quality_report_initial.json")
-                                for item in collection
-                            )
-                        )
-                        self.assertFalse(
-                            any(
-                                str(item.get("status", "")).strip().lower() == "missing"
+                                str(item.get("status", "")).strip().lower() == "not_applicable"
+                                and str(item.get("reason", "")) == "quality_stage_interrupted_before_final_report"
                                 and str(item.get("archive_name", "")).endswith("quality_report.json")
                                 for item in collection
                             )

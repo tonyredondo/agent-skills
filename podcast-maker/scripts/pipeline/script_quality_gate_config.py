@@ -87,7 +87,7 @@ def critical_score_threshold() -> float:
 
 @dataclass(frozen=True)
 class ScriptQualityGateConfig:
-    """Immutable runtime config for script quality evaluation/repair."""
+    """Immutable runtime config for script quality evaluation."""
 
     action: str
     evaluator: str
@@ -96,24 +96,16 @@ class ScriptQualityGateConfig:
     max_words_ratio: float
     max_consecutive_same_speaker: int
     max_repeat_line_ratio: float
-    require_summary: bool
-    require_closing: bool
     min_overall_score: float
     min_cadence_score: float
     min_logic_score: float
     min_clarity_score: float
     llm_max_output_tokens: int
     llm_max_prompt_chars: int
-    auto_repair: bool
-    repair_attempts: int
-    repair_max_output_tokens: int
-    repair_max_input_chars: int
     semantic_rule_fallback: bool = True
     semantic_min_confidence: float = 0.55
     semantic_tail_lines: int = 10
     semantic_max_output_tokens: int = 220
-    repair_revert_on_fail: bool = True
-    repair_min_word_ratio: float = 0.85
     max_turn_words: int = 58
     max_long_turn_count: int = 3
     max_question_ratio: float = 0.45
@@ -157,7 +149,6 @@ class ScriptQualityGateConfig:
         default_min_cadence = 3.9 if is_production_strict else 3.7
         default_min_logic = 4.0 if is_production_strict else 3.8
         default_min_clarity = 4.0 if is_production_strict else 3.8
-        default_repair_attempts = 2 if is_production_strict else 2
         return ScriptQualityGateConfig(
             action=action,
             evaluator=evaluator,
@@ -176,24 +167,12 @@ class ScriptQualityGateConfig:
                 0.0,
                 1.0,
             ),
-            require_summary=_env_bool("SCRIPT_QUALITY_REQUIRE_SUMMARY", True),
-            require_closing=_env_bool("SCRIPT_QUALITY_REQUIRE_CLOSING", True),
             min_overall_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_OVERALL_SCORE", default_min_overall), 0.0, 5.0),
             min_cadence_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_CADENCE_SCORE", default_min_cadence), 0.0, 5.0),
             min_logic_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_LOGIC_SCORE", default_min_logic), 0.0, 5.0),
             min_clarity_score=_clamp(_env_float("SCRIPT_QUALITY_MIN_CLARITY_SCORE", default_min_clarity), 0.0, 5.0),
             llm_max_output_tokens=max(128, _env_int("SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS", 1400)),
             llm_max_prompt_chars=max(2000, _env_int("SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS", 12000)),
-            auto_repair=_env_bool("SCRIPT_QUALITY_GATE_AUTO_REPAIR", True),
-            repair_attempts=max(0, _env_int("SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS", default_repair_attempts)),
-            repair_max_output_tokens=max(
-                256,
-                _env_int("SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS", 5200),
-            ),
-            repair_max_input_chars=max(
-                4000,
-                _env_int("SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS", 30000),
-            ),
             semantic_rule_fallback=_env_bool("SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK", True),
             semantic_min_confidence=_clamp(
                 _env_float("SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE", 0.55),
@@ -207,12 +186,6 @@ class ScriptQualityGateConfig:
             semantic_max_output_tokens=max(
                 96,
                 _env_int("SCRIPT_QUALITY_GATE_SEMANTIC_MAX_OUTPUT_TOKENS", 440),
-            ),
-            repair_revert_on_fail=_env_bool("SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL", True),
-            repair_min_word_ratio=_clamp(
-                _env_float("SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO", 0.85),
-                0.0,
-                2.0,
             ),
             max_turn_words=max(
                 8,

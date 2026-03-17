@@ -245,6 +245,10 @@ class ScriptConfig:
         resolved_wpm = max(80.0, float(_coalesce(words_per_min, _env_float("WORDS_PER_MIN", 130.0))))
         resolved_min = int(_coalesce(min_words, _env_int("MIN_WORDS", int(resolved_target * resolved_wpm))))
         resolved_max = int(_coalesce(max_words, _env_int("MAX_WORDS", int(resolved_min * 1.15))))
+        if profile.name == "short" and min_words is None and os.environ.get("MIN_WORDS") is None:
+            resolved_min = int(round(resolved_min * 0.85))
+        if profile.name == "short" and max_words is None and os.environ.get("MAX_WORDS") is None:
+            resolved_max = int(round(resolved_max * 0.9))
         if resolved_max < resolved_min:
             resolved_max = resolved_min
         resolved_min = max(60, resolved_min)

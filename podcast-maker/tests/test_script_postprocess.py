@@ -365,12 +365,10 @@ class ScriptPostprocessTests(unittest.TestCase):
         ]
         out = harden_script_structure(lines)
         connector_prefixes = (
-            "por otro lado,",
-            "ahora bien,",
-            "dicho esto,",
-            "en ese sentido,",
-            "en paralelo,",
-            "pasando a otro frente,",
+            "con eso,",
+            "aun asi,",
+            "visto asi,",
+            "y ahi,",
         )
         self.assertTrue(any((line.get("text") or "").lower().startswith(connector_prefixes) for line in out[1:]))
 
@@ -397,8 +395,22 @@ class ScriptPostprocessTests(unittest.TestCase):
         ]
         out = harden_script_structure(lines)
         second = str(out[1].get("text") or "").lower()
-        self.assertRegex(second, r"^(?:por otro lado|ahora bien|dicho esto|en ese sentido|en paralelo|pasando a otro frente),")
+        self.assertRegex(second, r"^(?:con eso|aun asi|visto asi|y ahi),")
         self.assertIsNone(re.search(r",\s*y\b", second))
+
+    def test_harden_script_structure_trims_repeated_stock_openers(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Por otro lado, abrimos con una alerta operativa concreta."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Ahora bien, bajemos eso a tierra con un ejemplo real."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Exacto, el problema aparece cuando nadie entiende el criterio."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Claro, y ahi el equipo pierde tiempo persiguiendo excepciones."},
+        ]
+        out = harden_script_structure(lines)
+        lowered = [str(line.get("text") or "").lower() for line in out]
+        self.assertTrue(lowered[0].startswith("por otro lado,"))
+        self.assertFalse(lowered[1].startswith(("por otro lado,", "ahora bien,", "exacto", "claro", "tal cual", "totalmente")))
+        self.assertFalse(lowered[2].startswith(("por otro lado,", "ahora bien,", "exacto", "claro", "tal cual", "totalmente")))
+        self.assertFalse(lowered[3].startswith(("por otro lado,", "ahora bien,", "exacto", "claro", "tal cual", "totalmente")))
 
     def test_normalize_speaker_turns_limits_consecutive_run(self) -> None:
         lines = [

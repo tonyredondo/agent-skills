@@ -10,7 +10,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Segmentamos el reto en fases para priorizar entregables de alto valor."
+      "text": "Vale, bajemos eso: que entregable mueve primero la aguja y cual solo ocupa calendario."
     },
     {
       "speaker": "Carlos",
@@ -22,7 +22,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "La segunda fase activa experimentos controlados con criterios de exito objetivos."
+      "text": "Por ejemplo, si el piloto sale bien pero no escala, que aprendiste de verdad."
     },
     {
       "speaker": "Carlos",
@@ -34,7 +34,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Incluimos un bloque especial para gobernanza, cumplimiento y auditoria."
+      "text": "Y que riesgo compras si dejas gobernanza para el final cuando ya hay dependencias vivas."
     },
     {
       "speaker": "Carlos",
@@ -46,7 +46,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Cuando aparecen bloqueos, aplicamos planes de contingencia y recuperacion."
+      "text": "Entonces la contingencia buena no es un PDF, sino una salida practicable con responsables claros."
     },
     {
       "speaker": "Carlos",
@@ -58,25 +58,25 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Cerramos con recomendaciones accionables para distintos niveles de madurez."
+      "text": "Si esas recomendaciones no cambian por madurez, seguramente eran demasiado genericas."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En Resumen: plan por fases, medicion continua y resiliencia operativa."
+      "text": "La diferencia real aparece cuando cada fase deja una decision mas facil que antes."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Gracias por acompanarnos en este episodio largo y detallado."
+      "text": "Y si no mejora la toma de decisiones, todo el despliegue sobra aunque suene completo."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Nos vemos en el proximo episodio."
+      "text": "Ahi se ve si la estrategia aguanta la operacion o era solo un plan elegante."
     }
   ]
 }

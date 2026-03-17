@@ -431,6 +431,12 @@ class IntegrationRawOnlyFallbackTests(unittest.TestCase):
             with open(summary_path, "r", encoding="utf-8") as f:
                 summary = json.load(f)
             self.assertEqual(summary.get("normalized_script_path"), normalized_script_path)
+            manifest_path = str(summary.get("run_manifest_path", ""))
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest.get("status_by_stage", {}).get("script"), "completed")
+            self.assertEqual(manifest.get("status_by_stage", {}).get("audio"), "completed")
+            self.assertEqual(manifest.get("script", {}).get("status"), "completed")
 
     def test_precheck_hardening_respects_configured_max_consecutive_speaker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -505,15 +511,26 @@ class IntegrationRawOnlyFallbackTests(unittest.TestCase):
                 with mock.patch.object(make_podcast.OpenAIClient, "from_configs", return_value=_FakeClient()):
                     with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                         with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
-                            with mock.patch.dict(
-                                os.environ,
-                                {
-                                    "SCRIPT_QUALITY_GATE_ACTION": "off",
-                                    "SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER": "3",
+                            with mock.patch.object(
+                                make_podcast.StructuralGate,
+                                "evaluate",
+                                return_value={
+                                    "pass": False,
+                                    "notes": ["too_short"],
+                                    "checks": {},
+                                    "line_count": 1,
+                                    "word_count": 2,
                                 },
-                                clear=False,
                             ):
-                                rc = make_podcast.main()
+                                with mock.patch.dict(
+                                    os.environ,
+                                    {
+                                        "SCRIPT_QUALITY_GATE_ACTION": "off",
+                                        "SCRIPT_QUALITY_MAX_CONSECUTIVE_SAME_SPEAKER": "3",
+                                    },
+                                    clear=False,
+                                ):
+                                    rc = make_podcast.main()
 
             self.assertEqual(rc, 0)
             normalized_script_path = os.path.join(ckpt_dir, "normalized_script.json")
@@ -899,16 +916,27 @@ class IntegrationRawOnlyFallbackTests(unittest.TestCase):
                 with mock.patch.object(make_podcast.OpenAIClient, "from_configs", return_value=_FakeClient()):
                     with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                         with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
-                            with mock.patch.dict(
-                                os.environ,
-                                {
-                                    "SCRIPT_QUALITY_GATE_ACTION": "off",
-                                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
-                                    "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
+                            with mock.patch.object(
+                                make_podcast.StructuralGate,
+                                "evaluate",
+                                return_value={
+                                    "pass": False,
+                                    "notes": ["too_short"],
+                                    "checks": {},
+                                    "line_count": 2,
+                                    "word_count": 12,
                                 },
-                                clear=False,
                             ):
-                                rc = make_podcast.main()
+                                with mock.patch.dict(
+                                    os.environ,
+                                    {
+                                        "SCRIPT_QUALITY_GATE_ACTION": "off",
+                                        "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
+                                        "SCRIPT_QUALITY_GATE_EVALUATOR": "rules",
+                                    },
+                                    clear=False,
+                                ):
+                                    rc = make_podcast.main()
 
             self.assertEqual(rc, 4)
             fake_synth.synthesize.assert_not_called()
@@ -1168,12 +1196,14 @@ class IntegrationRawOnlyFallbackTests(unittest.TestCase):
                     with mock.patch.object(make_podcast, "AudioMixer", return_value=fake_mixer):
                         with mock.patch.object(make_podcast, "TTSSynthesizer", return_value=fake_synth):
                             with mock.patch.object(
-                                make_podcast,
-                                "evaluate_script_quality",
+                                make_podcast.StructuralGate,
+                                "evaluate",
                                 return_value={
-                                    "status": "failed",
                                     "pass": False,
-                                    "reasons": ["summary_ok", "closing_ok"],
+                                    "notes": ["too_short"],
+                                    "checks": {},
+                                    "line_count": 2,
+                                    "word_count": 15,
                                 },
                             ):
                                 with mock.patch.dict(

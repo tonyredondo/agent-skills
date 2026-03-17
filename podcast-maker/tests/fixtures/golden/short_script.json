@@ -10,7 +10,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Tambien vemos errores comunes y como evitarlos en un flujo diario."
+      "text": "Vale, bajemos eso a un caso diario: donde se atasca primero el equipo."
     },
     {
       "speaker": "Carlos",
@@ -22,19 +22,19 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En Resumen: entender el objetivo, ejecutar con orden y revisar resultados."
+      "text": "Entonces la mejora buena es la que reduce friccion sin ocultar el criterio."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Gracias por acompanarnos en este episodio corto y practico."
+      "text": "La senal buena es que el equipo aplica el cambio sin pedir una guia aparte."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Nos vemos en el proximo episodio."
+      "text": "Y si eso no pasa, el supuesto ahorro era solo aparente."
     }
   ]
 }

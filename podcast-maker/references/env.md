@@ -158,20 +158,12 @@ Profile source-validation defaults:
 | `SCRIPT_QUALITY_SOURCE_MIN_CATEGORY_COVERAGE` | `0.6` | Minimum covered source-category ratio |
 | `SCRIPT_QUALITY_SOURCE_MAX_TOPIC_SHARE` | `0.65` | Maximum concentration allowed in one category |
 | `SCRIPT_QUALITY_SOURCE_MIN_LEXICAL_HITS` | `4` | Minimum lexical overlap hits |
-| `SCRIPT_QUALITY_REQUIRE_SUMMARY` | `1` | Require summary signal |
-| `SCRIPT_QUALITY_REQUIRE_CLOSING` | `1` | Require closing signal |
 | `SCRIPT_QUALITY_MIN_OVERALL_SCORE` | profile default | LLM score guard |
 | `SCRIPT_QUALITY_MIN_CADENCE_SCORE` | profile default | LLM score guard |
 | `SCRIPT_QUALITY_MIN_LOGIC_SCORE` | profile default | LLM score guard |
 | `SCRIPT_QUALITY_MIN_CLARITY_SCORE` | profile default | LLM score guard |
 | `SCRIPT_QUALITY_LLM_MAX_OUTPUT_TOKENS` | `1400` | LLM eval output cap |
 | `SCRIPT_QUALITY_LLM_MAX_PROMPT_CHARS` | `12000` | LLM eval prompt cap |
-| `SCRIPT_QUALITY_GATE_AUTO_REPAIR` | `1` | Enables repair attempts |
-| `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS` | `2` | Repair attempts |
-| `SCRIPT_QUALITY_GATE_REPAIR_MAX_OUTPUT_TOKENS` | `5200` | Repair output cap |
-| `SCRIPT_QUALITY_GATE_REPAIR_MAX_INPUT_CHARS` | `30000` | Repair input cap |
-| `SCRIPT_QUALITY_GATE_REPAIR_REVERT_ON_FAIL` | `1` | Keep original on failed repair |
-| `SCRIPT_QUALITY_GATE_REPAIR_MIN_WORD_RATIO` | `0.85` | Shrink guardrail |
 | `SCRIPT_QUALITY_GATE_SEMANTIC_FALLBACK` | `1` | Semantic summary/closing fallback |
 | `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE` | `0.55` | Semantic confidence threshold |
 | `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES` | `10` | Tail lines analyzed semantically |
@@ -179,7 +171,6 @@ Profile source-validation defaults:
 | `SCRIPT_QUALITY_GATE_HARD_FAIL_STRUCTURAL_ONLY` | `1` | Hard-fail rollout behavior |
 | `SCRIPT_QUALITY_GATE_STRICT_SCORE_BLOCKING` | `0` | Optional strict score blocking |
 | `SCRIPT_QUALITY_GATE_CRITICAL_SCORE_THRESHOLD` | `2.5` | Strict score threshold |
-| `SCRIPT_QUALITY_GATE_REPAIR_OUTPUT_TOKENS_HARD_CAP` | `6400` | Dynamic repair hard cap |
 
 ## Entrypoint Runtime Controls
 
@@ -191,8 +182,6 @@ Profile source-validation defaults:
 | `SCRIPT_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_script.py` | Max orchestrated attempts |
 | `SCRIPT_ORCHESTRATED_RETRY_BACKOFF_MS` | `400` | `make_script.py` | Retry backoff |
 | `SCRIPT_ORCHESTRATED_RETRY_FAILURE_KINDS` | `openai_empty_output,invalid_schema,script_quality_rejected,script_completeness_failed` | `make_script.py` | Recoverable failure kinds |
-| `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS` | `300` | `make_script.py` | Total repair timeout |
-| `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS` | `90` | `make_script.py` | Per-attempt repair timeout |
 | `AUDIO_ORCHESTRATED_RETRY_ENABLED` | `1` | `make_podcast.py` | Enables orchestrated retries |
 | `AUDIO_ORCHESTRATED_MAX_ATTEMPTS` | `2` | `make_podcast.py` | Max orchestrated attempts |
 | `AUDIO_ORCHESTRATED_RETRY_BACKOFF_MS` | `1200` | `make_podcast.py` | Retry backoff |
@@ -203,7 +192,6 @@ Profile source-validation defaults:
 ## Artifact Paths
 
 - Script stage (`make_script.py`):
-  - `<script_checkpoint_dir>/<episode>/quality_report_initial.json`
   - `<script_checkpoint_dir>/<episode>/quality_report.json`
   - `<script_checkpoint_dir>/<episode>/run_manifest.json`
   - `<script_checkpoint_dir>/<episode>/pipeline_summary.json`

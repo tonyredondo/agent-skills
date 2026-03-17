@@ -65,6 +65,23 @@ class CheckpointResumeTests(unittest.TestCase):
                     resume_force=False,
                 )
 
+    def test_script_validate_resume_rejects_resume_compat_mismatch(self) -> None:
+        reliability = ReliabilityConfig.from_env()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScriptCheckpointStore(base_dir=tmp, episode_id="ep_resume_compat", reliability=reliability)
+            state = store.create_initial_state(source_hash="aaa", config_fingerprint="bbb")
+            state["resume_compat_version"] = 999
+            store.save(state)
+            loaded = store.load()
+            self.assertIsNotNone(loaded)
+            with self.assertRaises(RuntimeError):
+                store.validate_resume(
+                    loaded,  # type: ignore[arg-type]
+                    source_hash="aaa",
+                    config_fingerprint="bbb",
+                    resume_force=False,
+                )
+
     def test_audio_validate_resume_rejects_empty_manifest(self) -> None:
         reliability = ReliabilityConfig.from_env()
         with tempfile.TemporaryDirectory() as tmp:

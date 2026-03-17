@@ -1,6 +1,6 @@
 # Podcast Maker Quality And Golden Tests
 
-Use this reference for script-quality behavior, repair tuning, and release-gate regression checks.
+Use this reference for script-quality behavior and release-gate regression checks.
 
 ## Pre-Audio Script Quality Gate
 
@@ -26,13 +26,10 @@ Key defaults:
 - `SCRIPT_QUALITY_GATE_SEMANTIC_MIN_CONFIDENCE=0.55`
 - `SCRIPT_QUALITY_GATE_SEMANTIC_TAIL_LINES=10`
 
-Optional script-stage validation after `make_script.py` output:
+Script-stage validation after `make_script.py` output:
 
 - `SCRIPT_QUALITY_GATE_SCRIPT_ACTION=off|warn|enforce`
-- `SCRIPT_QUALITY_GATE_AUTO_REPAIR=0|1`
-- `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPTS`
-- `SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS`
-- `SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS`
+- `make_script.py` now expects the generator stage to persist `quality_report.json`; if that artifact is missing, the script run fails instead of triggering a hidden fallback evaluation or repair path.
 
 Recommended strict preset:
 
@@ -43,7 +40,6 @@ export SCRIPT_QUALITY_GATE_PROFILE=production_strict
 ## Quality Artifacts
 
 - script-stage:
-  - `<script_checkpoint_dir>/<episode>/quality_report_initial.json`
   - `<script_checkpoint_dir>/<episode>/quality_report.json`
 - audio-stage:
   - `<audio_checkpoint_dir>/<episode>/quality_report.json`
@@ -62,7 +58,7 @@ python3 ./scripts/evaluate_script_quality_loop.py \
   --out /tmp/podcast_eval/before_vs_after.json
 ```
 
-Use this before changing prompts, repairs, or thresholds.
+Use this before changing prompts, gating thresholds, or orality heuristics.
 
 ## Golden Regression Gate
 
@@ -77,9 +73,9 @@ Notes:
 
 - `run_golden_pipeline.py` requires valid OpenAI credentials
 - candidate sources must satisfy the current source-validation policy
-- if auth, network, or source-sizing constraints block candidate generation, use fixture fallback for structural validation
+- if auth, network, or source-sizing constraints block candidate generation, fixture fallback is only a local smoke path and must not be treated as a release gate pass
 
-Fixture fallback:
+Fixture fallback for local smoke checks only:
 
 ```bash
 python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates --allow-fixture-fallback

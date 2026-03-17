@@ -1,42 +1,52 @@
 {
   "dense_technical_script": {
+    "alternating_ratio": 1.0,
+    "host2_push_ratio": 0.6,
+    "host2_turn_ratio": 0.5,
     "line_count": 10,
-    "word_count": 100,
+    "meta_language_ok": true,
+    "scaffold_phrase_hits": 0,
     "unique_speakers": 2,
-    "has_recap_signal": true,
-    "farewell_in_last_3": true,
-    "meta_language_ok": true
+    "word_count": 123
   },
   "long_script": {
+    "alternating_ratio": 1.0,
+    "host2_push_ratio": 0.6667,
+    "host2_turn_ratio": 0.4615,
     "line_count": 13,
-    "word_count": 126,
+    "meta_language_ok": true,
+    "scaffold_phrase_hits": 0,
     "unique_speakers": 2,
-    "has_recap_signal": true,
-    "farewell_in_last_3": true,
-    "meta_language_ok": true
+    "word_count": 165
   },
   "multi_topic_script": {
+    "alternating_ratio": 1.0,
+    "host2_push_ratio": 0.75,
+    "host2_turn_ratio": 0.4444,
     "line_count": 9,
-    "word_count": 84,
+    "meta_language_ok": true,
+    "scaffold_phrase_hits": 0,
     "unique_speakers": 2,
-    "has_recap_signal": true,
-    "farewell_in_last_3": true,
-    "meta_language_ok": true
+    "word_count": 116
   },
   "short_script": {
+    "alternating_ratio": 1.0,
+    "host2_push_ratio": 0.6667,
+    "host2_turn_ratio": 0.5,
     "line_count": 6,
-    "word_count": 58,
+    "meta_language_ok": true,
+    "scaffold_phrase_hits": 0,
     "unique_speakers": 2,
-    "has_recap_signal": true,
-    "farewell_in_last_3": true,
-    "meta_language_ok": true
+    "word_count": 73
   },
   "standard_script": {
+    "alternating_ratio": 1.0,
+    "host2_push_ratio": 0.6,
+    "host2_turn_ratio": 0.5,
     "line_count": 10,
-    "word_count": 101,
+    "meta_language_ok": true,
+    "scaffold_phrase_hits": 0,
     "unique_speakers": 2,
-    "has_recap_signal": true,
-    "farewell_in_last_3": true,
-    "meta_language_ok": true
+    "word_count": 125
   }
 }

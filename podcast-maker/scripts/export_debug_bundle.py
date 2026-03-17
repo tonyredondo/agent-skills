@@ -15,10 +15,20 @@ from typing import Dict, List, Tuple
 SCRIPT_RUN_FILES = (
     "script_checkpoint.json",
     "run_summary.json",
-    "quality_report_initial.json",
     "quality_report.json",
     "run_manifest.json",
     "pipeline_summary.json",
+)
+
+OPTIONAL_SCRIPT_RUN_FILES = (
+    "structural_report.json",
+    "editorial_report.json",
+    "evidence_map.json",
+    "episode_plan.json",
+    "draft_script.json",
+    "rewritten_script.json",
+    "fact_guard_report_draft.json",
+    "fact_guard_report_final.json",
 )
 
 AUDIO_RUN_FILES = (
@@ -456,24 +466,18 @@ def _collect_paths(
             script_quality_stage_interrupted = bool(payload.get("quality_stage_interrupted"))
 
     def _script_quality_not_applicable_reason(file_name: str) -> str:
-        if file_name not in {"quality_report.json", "quality_report_initial.json"}:
+        if file_name != "quality_report.json":
             return ""
         if script_quality_gate_executed is False:
             return "script_quality_gate_not_executed"
-        if file_name == "quality_report_initial.json" and script_quality_stage_started is not True:
-            return "quality_stage_not_started"
+        if script_quality_stage_interrupted is True and script_quality_stage_finished is not True:
+            return "quality_stage_interrupted_before_final_report"
         if script_quality_stage_started is False:
             return "quality_stage_not_started"
         return ""
 
     def _script_quality_missing_reason(file_name: str, *, fallback: str) -> str:
-        if file_name == "quality_report_initial.json":
-            if script_quality_stage_started is True:
-                return "quality_stage_started_initial_report_missing"
-            return fallback
         if file_name == "quality_report.json":
-            if script_quality_stage_interrupted is True and script_quality_stage_finished is not True:
-                return "quality_stage_interrupted_final_report_missing"
             if script_quality_stage_started is True:
                 return "quality_report_expected_missing"
             if script_quality_gate_executed is True:
@@ -481,38 +485,14 @@ def _collect_paths(
             return fallback
         return fallback
 
-    def _append_interrupted_quality_final_fallback(
-        *,
-        initial_candidates: List[str],
-        category: str,
-    ) -> bool:
-        if script_quality_stage_interrupted is not True or script_quality_stage_finished is True:
-            return False
-        for candidate in initial_candidates:
-            initial_path = str(candidate or "").strip()
-            if not initial_path or not os.path.exists(initial_path):
-                continue
-            requested.append(os.path.abspath(initial_path))
-            collection_report.append(
-                _report_entry(
-                    status="found",
-                    path=initial_path,
-                    category=category,
-                    reason="initial_only_due_to_interruption",
-                )
-            )
-            return True
-        return False
-
     if use_manifest_layout:
         script_run_dir = os.path.join(script_ckpt_dir, run_episode)
         script_block = manifest_payload.get("script", {}) if isinstance(manifest_payload, dict) else {}
         script_manifest_paths: Dict[str, str] = {}
         script_manifest_run_summary_path = ""
         script_manifest_quality_report_path = ""
-        script_manifest_quality_report_initial_path = ""
         if isinstance(script_block, dict):
-            for key in ("run_summary_path", "quality_report_path", "quality_report_initial_path"):
+            for key in ("run_summary_path", "quality_report_path"):
                 raw_path = str(script_block.get(key, "")).strip()
                 if not raw_path:
                     continue
@@ -526,8 +506,6 @@ def _collect_paths(
                     script_manifest_run_summary_path = resolved_path
                 elif key == "quality_report_path":
                     script_manifest_quality_report_path = resolved_path
-                elif key == "quality_report_initial_path":
-                    script_manifest_quality_report_initial_path = resolved_path
             if script_quality_stage_started is None and "quality_stage_started" in script_block:
                 script_quality_stage_started = bool(script_block.get("quality_stage_started"))
             if script_quality_stage_finished is None and "quality_stage_finished" in script_block:
@@ -556,20 +534,6 @@ def _collect_paths(
                     os.path.abspath(script_manifest_quality_report_path) != os.path.abspath(path)
                     and not os.path.exists(path)
                 )
-            elif name == "quality_report_initial.json" and script_manifest_quality_report_initial_path:
-                manifest_pointer_override = (
-                    os.path.abspath(script_manifest_quality_report_initial_path) != os.path.abspath(path)
-                    and not os.path.exists(path)
-                )
-            if name == "quality_report.json" and not os.path.exists(path):
-                if _append_interrupted_quality_final_fallback(
-                    initial_candidates=[
-                        script_manifest_quality_report_initial_path,
-                        os.path.join(script_run_dir, "quality_report_initial.json"),
-                    ],
-                    category="script_checkpoint",
-                ):
-                    continue
             not_applicable_reason = ""
             if not os.path.exists(path):
                 not_applicable_reason = (
@@ -592,24 +556,12 @@ def _collect_paths(
             if key == "run_summary_path":
                 default_path = os.path.join(script_run_dir, "run_summary.json")
                 pointer_name = "run_summary.json"
-            elif key == "quality_report_initial_path":
-                default_path = os.path.join(script_run_dir, "quality_report_initial.json")
-                pointer_name = "quality_report_initial.json"
             else:
                 default_path = os.path.join(script_run_dir, "quality_report.json")
                 pointer_name = "quality_report.json"
             if os.path.abspath(resolved_path) == os.path.abspath(default_path):
                 # Already covered via SCRIPT_RUN_FILES.
                 continue
-            if pointer_name == "quality_report.json" and not os.path.exists(resolved_path):
-                if _append_interrupted_quality_final_fallback(
-                    initial_candidates=[
-                        script_manifest_quality_report_initial_path,
-                        os.path.join(script_run_dir, "quality_report_initial.json"),
-                    ],
-                    category="manifest_pointer",
-                ):
-                    continue
             not_applicable_reason = (
                 _script_quality_not_applicable_reason(pointer_name)
                 if not os.path.exists(resolved_path)
@@ -624,6 +576,18 @@ def _collect_paths(
                 missing_reason=_script_quality_missing_reason(pointer_name, fallback="manifest_pointer_missing"),
                 not_applicable_reason=not_applicable_reason,
             )
+        for name in OPTIONAL_SCRIPT_RUN_FILES:
+            optional_path = os.path.join(script_run_dir, name)
+            if os.path.exists(optional_path):
+                _append_path_status(
+                    requested=requested,
+                    missing=missing,
+                    collection_report=collection_report,
+                    path=optional_path,
+                    category="script_checkpoint_optional",
+                    missing_reason="",
+                    not_applicable_reason="",
+                )
     else:
         script_episode_candidates = [episode]
         script_path = str(args.script_path or "").strip()
@@ -650,16 +614,6 @@ def _collect_paths(
                     )
                     found_any = True
             if not found_any:
-                if name == "quality_report.json":
-                    initial_candidates = [
-                        os.path.join(script_ckpt_dir, script_episode, "quality_report_initial.json")
-                        for script_episode in script_episode_candidates
-                    ]
-                    if _append_interrupted_quality_final_fallback(
-                        initial_candidates=initial_candidates,
-                        category="script_checkpoint",
-                    ):
-                        continue
                 _append_path_status(
                     requested=requested,
                     missing=missing,
@@ -669,6 +623,20 @@ def _collect_paths(
                     missing_reason=_script_quality_missing_reason(name, fallback="not_found_in_episode_or_alias"),
                     not_applicable_reason=_script_quality_not_applicable_reason(name),
                 )
+        for name in OPTIONAL_SCRIPT_RUN_FILES:
+            for script_episode in script_episode_candidates:
+                optional_path = os.path.join(script_ckpt_dir, script_episode, name)
+                if os.path.exists(optional_path):
+                    _append_path_status(
+                        requested=requested,
+                        missing=missing,
+                        collection_report=collection_report,
+                        path=optional_path,
+                        category="script_checkpoint_optional",
+                        missing_reason="",
+                        not_applicable_reason="",
+                    )
+                    break
 
     if use_manifest_layout and isinstance(manifest_payload, dict) and not script_stage_status:
         status_by_stage = manifest_payload.get("status_by_stage", {})

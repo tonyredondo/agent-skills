@@ -68,6 +68,7 @@ class AudioMixResult:
     raw_path: str
     norm_path: str
     final_path: str
+    degradations: List[str]
 
 
 @dataclass
@@ -92,7 +93,7 @@ class AudioMixer:
             concat_file = os.path.join(tmp, "concat.txt")
             with open(concat_file, "w", encoding="utf-8") as f:
                 for path in files:
-                    f.write(_ffconcat_line(path))
+                    f.write(_ffconcat_line(os.path.abspath(path)))
             cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -111,11 +112,11 @@ class AudioMixer:
             ]
             _run(cmd, self.logger)
 
-    def _concat_with_reencode_fallback(self, files: List[str], out_path: str) -> None:
+    def _concat_with_reencode_fallback(self, files: List[str], out_path: str) -> List[str]:
         """Concat with codec-normalization fallback when stream-copy fails."""
         try:
             self._concat_copy(files, out_path)
-            return
+            return []
         except Exception:
             self.logger.warn("concat_copy_failed_reencoding")
 
@@ -142,8 +143,9 @@ class AudioMixer:
                 _run(cmd, self.logger)
                 normalized_paths.append(norm_seg)
             self._concat_copy(normalized_paths, out_path)
+        return ["concat_reencode_fallback"]
 
-    def _loudnorm_two_pass(self, raw_path: str, norm_path: str) -> None:
+    def _loudnorm_two_pass(self, raw_path: str, norm_path: str) -> List[str]:
         """Apply EBU loudness normalization using two-pass analysis."""
         base_filter = (
             f"loudnorm=I={self.config.loudnorm_i}:TP={self.config.loudnorm_tp}:"
@@ -182,7 +184,7 @@ class AudioMixer:
                 norm_path,
             ]
             _run(fallback_cmd, self.logger)
-            return
+            return ["loudnorm_single_pass_fallback"]
 
         second_filter = (
             f"loudnorm=I={self.config.loudnorm_i}:TP={self.config.loudnorm_tp}:"
@@ -204,6 +206,7 @@ class AudioMixer:
             norm_path,
         ]
         _run(cmd, self.logger)
+        return []
 
     def _apply_eq(self, norm_path: str, final_path: str) -> None:
         """Apply final EQ sweetening pass on normalized audio."""
@@ -226,6 +229,10 @@ class AudioMixer:
         self._ensure_dependencies()
         if not segment_files:
             raise RuntimeError("No segment files to mix")
+        normalized_segment_files = [os.path.abspath(path) for path in segment_files]
+        missing = [path for path in normalized_segment_files if not os.path.exists(path)]
+        if missing:
+            raise RuntimeError(f"Missing segment files for mixing: {missing[:3]}")
         os.makedirs(outdir, exist_ok=True)
         raw_path = os.path.join(outdir, f"{basename}.mp3")
         norm_path = os.path.join(outdir, f"{basename}_norm.mp3")
@@ -240,13 +247,21 @@ class AudioMixer:
             except OSError:
                 pass
 
+        degradations: List[str] = []
         try:
-            self.logger.info("audio_concat_start", segments=len(segment_files))
-            self._concat_with_reencode_fallback(segment_files, raw_tmp)
+            self.logger.info("audio_concat_start", segments=len(normalized_segment_files))
+            degradations.extend(list(self._concat_with_reencode_fallback(normalized_segment_files, raw_tmp) or []))
             self.logger.info("audio_loudnorm_start")
-            self._loudnorm_two_pass(raw_tmp, norm_tmp)
+            degradations.extend(list(self._loudnorm_two_pass(raw_tmp, norm_tmp) or []))
             self.logger.info("audio_eq_start")
-            self._apply_eq(norm_tmp, final_tmp)
+            try:
+                self._apply_eq(norm_tmp, final_tmp)
+            except Exception:
+                self.logger.warn("audio_eq_failed_bypass_fallback")
+                degradations.append("eq_bypass_fallback")
+                if not os.path.exists(norm_tmp) or os.path.getsize(norm_tmp) <= 0:
+                    raise
+                shutil.copyfile(norm_tmp, final_tmp)
 
             if not os.path.exists(final_tmp) or os.path.getsize(final_tmp) <= 0:
                 raise RuntimeError("Final audio was not generated correctly")
@@ -266,5 +281,10 @@ class AudioMixer:
         if not os.path.exists(final_path) or os.path.getsize(final_path) <= 0:
             raise RuntimeError("Final audio was not generated correctly")
         self.logger.info("audio_mix_done", final_path=final_path, bytes=os.path.getsize(final_path))
-        return AudioMixResult(raw_path=raw_path, norm_path=norm_path, final_path=final_path)
+        return AudioMixResult(
+            raw_path=raw_path,
+            norm_path=norm_path,
+            final_path=final_path,
+            degradations=degradations,
+        )
 

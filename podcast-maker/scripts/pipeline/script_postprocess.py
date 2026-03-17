@@ -104,8 +104,28 @@ BRIDGE_BY_LANG = {
     ),
 }
 
+SPANISH_STOCK_OPENERS = (
+    "por otro lado",
+    "ahora bien",
+    "dicho esto",
+    "a partir de ahi",
+    "pasando a otro frente",
+    "pasando a",
+    "en paralelo",
+    "si lo conectamos",
+    "en ese sentido",
+    "por cierto",
+    "exacto",
+    "tal cual",
+    "claro",
+    "totalmente",
+    "de acuerdo",
+    "correcto",
+    "cierto",
+)
+
 TRANSITION_CONNECTOR_RE = re.compile(
-    r"^(?:y\s+de\s+hecho|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|a\s+partir\s+de\s+ahi|pasando\s+a|en\s+paralelo|si\s+lo\s+conectamos|en\s+ese\s+sentido|por\s+cierto)\b",
+    r"^(?:y\s+de\s+hecho|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|a\s+partir\s+de\s+ahi|pasando\s+a|en\s+paralelo|si\s+lo\s+conectamos|en\s+ese\s+sentido|por\s+cierto|con\s+eso|aun\s+asi|visto\s+asi|y\s+ahi|de\s+paso)\b",
     re.IGNORECASE,
 )
 SUMMARY_LABEL_RE = re.compile(
@@ -116,19 +136,23 @@ QUESTION_PUNCT_RE = re.compile(r"[¿?]")
 TRANSITION_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
 CLAUSE_SPLIT_RE = re.compile(r"[.!?;:]+")
 SPANISH_LEADING_FILLER_RE = re.compile(
-    r"^\s*(?:(?:y|adem[aá]s|tambi[eé]n|entonces|pues|bueno|vale|o\s+sea|de\s+hecho)\b[\s,:;\-]*)+",
+    r"^\s*(?:(?:y|adem[aá]s|tambi[eé]n|entonces|pues|bueno|vale|o\s+sea|de\s+hecho|exacto|tal\s+cual|claro|totalmente|de\s+acuerdo|correcto|cierto)\b[\s,:;\-]*)+",
     re.IGNORECASE,
 )
 TRANSITION_PREFIX_TEXT_RE = re.compile(
-    r"^\s*(?:por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|en\s+ese\s+sentido|en\s+paralelo|pasando\s+a\s+otro\s+frente|a\s+partir\s+de\s+ahi)\s*,?\s*",
+    r"^\s*(?:por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|en\s+ese\s+sentido|en\s+paralelo|pasando\s+a\s+otro\s+frente|a\s+partir\s+de\s+ahi|con\s+eso|aun\s+asi|visto\s+asi|y\s+ahi|de\s+paso)\s*,?\s*",
     re.IGNORECASE,
 )
 NATURAL_RESPONSE_OPENER_RE = re.compile(
     r"^(?:exacto|tal\s+cual|claro|de\s+acuerdo|totalmente|justo|vale|bien|ojo|ademas|tambien|de\s+hecho|correcto|cierto)\b",
     re.IGNORECASE,
 )
+SPANISH_STOCK_OPENER_RE = re.compile(
+    r"^\s*(?:[¡¿\"'(\[]\s*)*(?:por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|a\s+partir\s+de\s+ahi|pasando\s+a\s+otro\s+frente|pasando\s+a|en\s+paralelo|si\s+lo\s+conectamos|en\s+ese\s+sentido|por\s+cierto|exacto|tal\s+cual|claro|totalmente|de\s+acuerdo|correcto|cierto)\b[\s,:;\-]*",
+    re.IGNORECASE,
+)
 RECAP_GENERIC_FRAGMENT_RE = re.compile(
-    r"^(?:con\s+eso\s+nos\s+quedamos|me\s+quedo\s+con|antes\s+de\s+cerrar|en\s+ese\s+sentido|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|tal\s+cual|exacto|claro|vale)\b",
+    r"^(?:con\s+eso\s+nos\s+quedamos|me\s+quedo\s+con|antes\s+de\s+cerrar|en\s+ese\s+sentido|por\s+otro\s+lado|ahora\s+bien|dicho\s+esto|tal\s+cual|exacto|claro|vale|con\s+eso|aun\s+asi|visto\s+asi|de\s+paso)\b",
     re.IGNORECASE,
 )
 RECAP_WEAK_TAIL_TOKEN_RE = re.compile(
@@ -182,12 +206,10 @@ RECAP_FRAGMENT_STOPWORDS = {
 }
 TRANSITION_PREFIX_BY_LANG = {
     "es": (
-        "Por otro lado,",
-        "Ahora bien,",
-        "Dicho esto,",
-        "En ese sentido,",
-        "En paralelo,",
-        "Pasando a otro frente,",
+        "Con eso,",
+        "Aun asi,",
+        "Visto asi,",
+        "Y ahi,",
     ),
     "en": (
         "On the other hand,",
@@ -264,9 +286,9 @@ TAIL_TRUNCATION_RE = re.compile(
 COMPLETE_SENTENCE_END_RE = re.compile(r"(?:[.!?…]|[.!?…][\"'”’)\]])\s*$")
 SPANISH_OPENING_WORD_RE = re.compile(r"^\s*(?:[¡¿\"'(\[]\s*)*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)")
 SPANISH_REPETITIVE_OPENER_ALTERNATIVES = {
-    "y": ("Además,", "Por otro lado,", "A la vez,"),
-    "ademas": ("Por otro lado,", "A la vez,", "También,"),
-    "tambien": ("Además,", "En paralelo,", "Por otra parte,"),
+    "y": ("Ademas,", "De paso,", "Con eso,"),
+    "ademas": ("Tambien,", "De paso,", "Con eso,"),
+    "tambien": ("Ademas,", "De paso,", "Con eso,"),
 }
 SPANISH_OPENER_START_RE = {
     "y": re.compile(r"^\s*(?:[¡¿\"'(\[]\s*)*y\b[,\s]*", re.IGNORECASE),
@@ -370,6 +392,30 @@ def _line_opening_token(text: str) -> str:
     if match is None:
         return ""
     return _normalized_text(match.group(1))
+
+
+def _capitalize_sentence_start(text: str) -> str:
+    """Uppercase the first alphabetical character after a prefix strip."""
+    sample = str(text or "").strip()
+    if not sample:
+        return ""
+    chars = list(sample)
+    for idx, ch in enumerate(chars):
+        if ch.isalpha():
+            chars[idx] = ch.upper()
+            return "".join(chars)
+    return sample
+
+
+def _strip_stock_opener(text: str) -> str:
+    """Drop one stock opener at line start and restore sentence casing."""
+    sample = str(text or "").strip()
+    if not sample:
+        return ""
+    stripped = SPANISH_STOCK_OPENER_RE.sub("", sample, count=1).strip()
+    if not stripped or stripped == sample:
+        return sample
+    return _capitalize_sentence_start(stripped)
 
 
 def _strip_leading_discourse_fillers(text: str, *, language_hint: str) -> str:
@@ -557,6 +603,33 @@ def diversify_repetitive_openers(
         else:
             repeat_streak = 1
         previous_opener = _line_opening_token(str(line.get("text") or ""))
+    return out
+
+
+def trim_repetitive_stock_openers(
+    lines: List[Dict[str, str]],
+    *,
+    language_hint: str | None = None,
+    window_size: int = 6,
+) -> List[Dict[str, str]]:
+    """Strip repeated stock openers across nearby turns for cleaner cadence."""
+    out = [dict(line) for line in lines]
+    if _resolve_language_hint(out, language_hint) != "es":
+        return out
+    recent_hits: List[int] = []
+    for idx, line in enumerate(out):
+        text = str(line.get("text") or "").strip()
+        if not text:
+            continue
+        opener_present = SPANISH_STOCK_OPENER_RE.match(text) is not None
+        recent_hits = [prev_idx for prev_idx in recent_hits if idx - prev_idx <= max(1, int(window_size))]
+        if opener_present and recent_hits:
+            stripped = _strip_stock_opener(text)
+            if stripped and len(stripped.split()) >= 4:
+                line["text"] = stripped
+                opener_present = SPANISH_STOCK_OPENER_RE.match(stripped) is not None
+        if opener_present:
+            recent_hits.append(idx)
     return out
 
 
@@ -1102,6 +1175,7 @@ def repair_script_completeness(
     normalized = normalize_spanish_technical_terms(normalized)
     normalized = sanitize_meta_podcast_language(normalized)
     normalized = sanitize_declared_tease_intent(normalized)
+    normalized = trim_repetitive_stock_openers(normalized)
     normalized = diversify_repetitive_openers(normalized)
     normalized = smooth_abrupt_transitions(normalized)
     return sanitize_abrupt_tail(normalized, tail_window=max(1, len(normalized)))
@@ -1121,6 +1195,7 @@ def harden_script_structure(
     normalized = normalize_spanish_technical_terms(normalized)
     normalized = sanitize_meta_podcast_language(normalized)
     normalized = sanitize_declared_tease_intent(normalized)
+    normalized = trim_repetitive_stock_openers(normalized)
     normalized = diversify_repetitive_openers(normalized)
     normalized = smooth_abrupt_transitions(normalized)
     return sanitize_abrupt_tail(normalized, tail_window=8)

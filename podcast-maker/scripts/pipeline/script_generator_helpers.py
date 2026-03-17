@@ -34,6 +34,13 @@ def phase_seconds_with_generation(phase_seconds: Dict[str, float]) -> Dict[str, 
             out[str(key)] = 0.0
     generation_components = (
         out.get("pre_summary", 0.0),
+        out.get("evidence_map", 0.0),
+        out.get("episode_plan", 0.0),
+        out.get("draft_dialogue", 0.0),
+        out.get("fact_guard_draft", 0.0),
+        out.get("editorial_rewrite", 0.0),
+        out.get("editorial_gate", 0.0),
+        out.get("fact_guard_final", 0.0),
         out.get("chunk_generation", 0.0),
         out.get("continuations", 0.0),
         out.get("truncation_recovery", 0.0),

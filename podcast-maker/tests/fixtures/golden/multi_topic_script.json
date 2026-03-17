@@ -10,7 +10,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En productividad proponemos bloques cortos con objetivos concretos y medibles."
+      "text": "Por ejemplo, en productividad el bloque corto sirve solo si corta una espera concreta."
     },
     {
       "speaker": "Carlos",
@@ -22,7 +22,7 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En calidad tecnica insistimos en pruebas automaticas y despliegue gradual."
+      "text": "Y en calidad tecnica, que riesgo compras si despliegas gradual sin metricas que te frenen."
     },
     {
       "speaker": "Carlos",
@@ -34,25 +34,25 @@
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Tambien ayuda a escalar sin perder visibilidad del avance real."
+      "text": "Entonces escalar no vale mucho si cada equipo interpreta distinto lo que significa avance."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "En Resumen: foco por bloques, acuerdos claros y calidad continua."
+      "text": "Cuando unes los tres temas, la clave es que cada uno baje un coste distinto del trabajo."
     },
     {
       "speaker": "Lucia",
       "role": "Host2",
       "instructions": "Speak in a bright, friendly, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Gracias por escucharnos y compartir este recorrido de varios temas."
+      "text": "Si no puedes nombrar ese coste, el marco queda bonito pero no cambia nada."
     },
     {
       "speaker": "Carlos",
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
-      "text": "Nos vemos en el proximo episodio."
+      "text": "Y por eso conviene mirar el sistema entero, no optimizar cada pieza por separado."
     }
   ]
 }

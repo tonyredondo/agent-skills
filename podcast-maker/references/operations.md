@@ -74,7 +74,7 @@ python3 ./scripts/check_golden_suite.py --candidate-dir ./.golden_candidates
 
 Symptoms:
 
-- repeated continuation rounds
+- repeated continuation or recovery attempts without meaningful script growth
 - `word_delta` below threshold
 - run ends with "No progress while expanding script"
 

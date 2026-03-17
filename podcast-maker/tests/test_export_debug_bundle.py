@@ -567,10 +567,6 @@ class ExportDebugBundleTests(unittest.TestCase):
                 },
             )
             self._write_json(
-                os.path.join(script_run, "quality_report_initial.json"),
-                {"status": "failed", "quality_report_phase": "initial"},
-            )
-            self._write_json(
                 os.path.join(script_run, "run_manifest.json"),
                 {
                     "manifest_version": 2,
@@ -604,23 +600,9 @@ class ExportDebugBundleTests(unittest.TestCase):
                 collection_report = json.loads(zf.read("collection_report.json").decode("utf-8"))
             self.assertTrue(
                 any(
-                    item.get("status") == "found"
-                    and str(item.get("archive_name", "")).endswith("quality_report_initial.json")
-                    for item in collection_report
-                )
-            )
-            self.assertTrue(
-                any(
-                    item.get("status") == "found"
-                    and str(item.get("archive_name", "")).endswith("quality_report_initial.json")
-                    and str(item.get("reason", "")) == "initial_only_due_to_interruption"
-                    for item in collection_report
-                )
-            )
-            self.assertFalse(
-                any(
-                    item.get("status") == "missing"
+                    item.get("status") == "not_applicable"
                     and str(item.get("archive_name", "")).endswith("quality_report.json")
+                    and str(item.get("reason", "")) == "quality_stage_interrupted_before_final_report"
                     for item in collection_report
                 )
             )

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from .config import ReliabilityConfig
+from .podcast_artifacts import RESUME_COMPAT_VERSION
 
 
 class LockError(RuntimeError):
@@ -245,16 +246,21 @@ class ScriptCheckpointStore:
         *,
         source_hash: str,
         config_fingerprint: str,
+        run_token: str = "",
     ) -> Dict[str, Any]:
         """Create initial checkpoint payload for a new generation run."""
         return {
             "checkpoint_version": self.reliability.checkpoint_version,
+            "resume_compat_version": RESUME_COMPAT_VERSION,
             "episode_id": self.episode_id,
+            "run_token": str(run_token or "").strip(),
             "source_hash": source_hash,
             "config_fingerprint": config_fingerprint,
-            "chunks_done": 0,
             "lines": [],
             "current_word_count": 0,
+            "phase_cursor": "startup",
+            "phase_status": {},
+            "artifact_paths": {},
             "last_success_at": int(time.time()),
             "status": "running",
         }
@@ -284,6 +290,12 @@ class ScriptCheckpointStore:
             state["migrated_from_version"] = existing_version
             state["checkpoint_version"] = current_version
             migrated = True
+        existing_resume_compat = int(state.get("resume_compat_version", RESUME_COMPAT_VERSION) or RESUME_COMPAT_VERSION)
+        if existing_resume_compat != RESUME_COMPAT_VERSION:
+            raise RuntimeError(
+                "Resume blocked because resume compatibility version changed. Use a clean run."
+            )
+        state["resume_compat_version"] = RESUME_COMPAT_VERSION
         if not self.reliability.resume_require_matching_fingerprint:
             return migrated
         if resume_force:

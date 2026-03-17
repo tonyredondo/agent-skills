@@ -72,11 +72,14 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
             )
         checkpoint_path = os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json")
         run_summary_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json")
+        quality_report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         with open(checkpoint_path, "w", encoding="utf-8") as f:
             json.dump({"status": "completed", "lines": [], "current_word_count": 0}, f)
         with open(run_summary_path, "w", encoding="utf-8") as f:
             json.dump({"status": "completed", "phase_seconds": {}}, f)
+        with open(quality_report_path, "w", encoding="utf-8") as f:
+            json.dump({"status": "passed", "pass": True, "reasons": []}, f)
         return SimpleNamespace(
             output_path=output_path,
             line_count=2,
@@ -85,376 +88,12 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
             run_summary_path=run_summary_path,
             script_retry_rate=0.0,
             invalid_schema_rate=0.0,
+            quality_report_path=quality_report_path,
         )
 
-    def test_quality_repair_interruption_persists_initial_and_interrupted_reports(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = self._base_args(tmp)
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            fake_result = self._prepare_generator_result(tmp=tmp, script_cfg=script_cfg)
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "RUN_MANIFEST_V2": "1",
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "enforce",
-                },
-                clear=False,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para la prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(
-                                            deleted_files=0,
-                                            deleted_bytes=0,
-                                            kept_files=0,
-                                        ),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_FakeClient(),
-                                        ):
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script,
-                                                "ScriptGenerator",
-                                                return_value=fake_generator,
-                                            ):
-                                                with mock.patch.object(
-                                                    make_script,
-                                                    "evaluate_script_quality",
-                                                    return_value={
-                                                        "status": "failed",
-                                                        "pass": False,
-                                                        "reasons": ["closing_ok"],
-                                                        "hard_fail_eligible": True,
-                                                        "failure_kind": "script_quality_rejected",
-                                                        "min_words_required": 1,
-                                                    },
-                                                ):
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "attempt_script_quality_repair",
-                                                        side_effect=InterruptedError("quality repair interrupted"),
-                                                    ):
-                                                        with mock.patch.object(make_script, "append_slo_event"):
-                                                            with mock.patch.object(
-                                                                make_script,
-                                                                "evaluate_slo_windows",
-                                                                return_value={"should_rollback": False},
-                                                            ):
-                                                                rc = make_script.main()
-            self.assertEqual(rc, 130)
-            report_initial_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report_initial.json")
-            report_final_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
-            self.assertTrue(os.path.exists(report_initial_path))
-            self.assertTrue(os.path.exists(report_final_path))
-            with open(report_final_path, "r", encoding="utf-8") as f:
-                report_final = json.load(f)
-            self.assertEqual(report_final.get("status"), "interrupted")
-            self.assertTrue(bool(report_final.get("quality_stage_interrupted", False)))
-            self.assertIn("quality_stage_interrupted", list(report_final.get("reasons", [])))
-            run_summary_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json")
-            self.assertTrue(os.path.exists(run_summary_path))
-            with open(run_summary_path, "r", encoding="utf-8") as f:
-                run_summary = json.load(f)
-            self.assertTrue(bool(run_summary.get("quality_stage_started", False)))
-            self.assertFalse(bool(run_summary.get("quality_stage_finished", True)))
-            self.assertTrue(bool(run_summary.get("quality_stage_interrupted", False)))
-            self.assertEqual(str(run_summary.get("status", "")), "interrupted")
-            self.assertEqual(str(run_summary.get("failure_kind", "")), make_script.ERROR_KIND_INTERRUPTED)
-            checkpoint_path = os.path.join(script_cfg.checkpoint_dir, "episode", "script_checkpoint.json")
-            self.assertTrue(os.path.exists(checkpoint_path))
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                checkpoint_payload = json.load(f)
-            self.assertEqual(str(checkpoint_payload.get("status", "")), "interrupted")
-            self.assertEqual(
-                str(checkpoint_payload.get("failure_kind", "")),
-                make_script.ERROR_KIND_INTERRUPTED,
-            )
-            manifest_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_manifest.json")
-            self.assertTrue(os.path.exists(manifest_path))
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            self.assertEqual(str(manifest.get("status_by_stage", {}).get("script", "")), "interrupted")
 
-    def test_quality_repair_forwards_timeout_controls(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = self._base_args(tmp)
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            fake_result = self._prepare_generator_result(tmp=tmp, script_cfg=script_cfg)
-            captured_call: dict[str, object] = {}
 
-            def _repair_spy(**kwargs):  # noqa: ANN003, ANN202
-                captured_call.update(kwargs)
-                return {
-                    "payload": {"lines": []},
-                    "report": {"status": "passed", "pass": True, "reasons": []},
-                    "repaired": False,
-                }
 
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "warn",
-                    "SCRIPT_QUALITY_GATE_REPAIR_TOTAL_TIMEOUT_SECONDS": "321",
-                    "SCRIPT_QUALITY_GATE_REPAIR_ATTEMPT_TIMEOUT_SECONDS": "33",
-                },
-                clear=False,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para la prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(
-                                            deleted_files=0,
-                                            deleted_bytes=0,
-                                            kept_files=0,
-                                        ),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_FakeClient(),
-                                        ):
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script,
-                                                "ScriptGenerator",
-                                                return_value=fake_generator,
-                                            ):
-                                                with mock.patch.object(
-                                                    make_script,
-                                                    "evaluate_script_quality",
-                                                    return_value={
-                                                        "status": "failed",
-                                                        "pass": False,
-                                                        "reasons": ["closing_ok"],
-                                                        "hard_fail_eligible": True,
-                                                        "failure_kind": "script_quality_rejected",
-                                                        "min_words_required": 1,
-                                                    },
-                                                ):
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "attempt_script_quality_repair",
-                                                        side_effect=_repair_spy,
-                                                    ):
-                                                        with mock.patch.object(make_script, "append_slo_event"):
-                                                            with mock.patch.object(
-                                                                make_script,
-                                                                "evaluate_slo_windows",
-                                                                return_value={"should_rollback": False},
-                                                            ):
-                                                                rc = make_script.main()
-            self.assertEqual(rc, 0)
-            self.assertEqual(int(captured_call.get("attempt_timeout_seconds", 0)), 33)
-            self.assertEqual(float(captured_call.get("total_timeout_seconds", 0.0)), 321.0)
-            self.assertTrue(callable(captured_call.get("cancel_check")))
-
-    def test_quality_repair_uses_default_timeout_controls(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = self._base_args(tmp)
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            fake_result = self._prepare_generator_result(tmp=tmp, script_cfg=script_cfg)
-            captured_call: dict[str, object] = {}
-
-            def _repair_spy(**kwargs):  # noqa: ANN003, ANN202
-                captured_call.update(kwargs)
-                return {
-                    "payload": {"lines": []},
-                    "report": {"status": "passed", "pass": True, "reasons": []},
-                    "repaired": False,
-                }
-
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "warn",
-                },
-                clear=True,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para la prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(
-                                            deleted_files=0,
-                                            deleted_bytes=0,
-                                            kept_files=0,
-                                        ),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_FakeClient(),
-                                        ):
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script,
-                                                "ScriptGenerator",
-                                                return_value=fake_generator,
-                                            ):
-                                                with mock.patch.object(
-                                                    make_script,
-                                                    "evaluate_script_quality",
-                                                    return_value={
-                                                        "status": "failed",
-                                                        "pass": False,
-                                                        "reasons": ["closing_ok"],
-                                                        "hard_fail_eligible": True,
-                                                        "failure_kind": "script_quality_rejected",
-                                                        "min_words_required": 1,
-                                                    },
-                                                ):
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "attempt_script_quality_repair",
-                                                        side_effect=_repair_spy,
-                                                    ):
-                                                        with mock.patch.object(make_script, "append_slo_event"):
-                                                            with mock.patch.object(
-                                                                make_script,
-                                                                "evaluate_slo_windows",
-                                                                return_value={"should_rollback": False},
-                                                            ):
-                                                                rc = make_script.main()
-            self.assertEqual(rc, 0)
-            self.assertEqual(int(captured_call.get("attempt_timeout_seconds", 0)), 90)
-            self.assertEqual(float(captured_call.get("total_timeout_seconds", 0.0)), 300.0)
-            self.assertTrue(callable(captured_call.get("cancel_check")))
-
-    def test_quality_repair_does_not_persist_incomplete_candidate_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = self._base_args(tmp)
-            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
-            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
-            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
-            fake_result = self._prepare_generator_result(tmp=tmp, script_cfg=script_cfg)
-            with open(fake_result.output_path, "r", encoding="utf-8") as f:
-                original_payload = json.load(f)
-            repaired_lines = [
-                {
-                    "speaker": "Ana",
-                    "role": "Host1",
-                    "instructions": "Voice Affect: Warm and confident | Tone: Conversational | Pacing: Measured | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief",
-                    "text": "Candidato incompleto para no persistir en salida final.",
-                }
-            ]
-
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "warn",
-                    "SCRIPT_COMPLETENESS_CHECK_V2": "1",
-                },
-                clear=False,
-            ):
-                with mock.patch.object(make_script, "parse_args", return_value=args):
-                    with mock.patch.object(
-                        make_script,
-                        "read_text_file_with_fallback",
-                        return_value=("contenido base suficiente para la prueba", "utf-8"),
-                    ):
-                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
-                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
-                                with mock.patch.object(make_script, "ensure_min_free_disk"):
-                                    with mock.patch.object(
-                                        make_script,
-                                        "cleanup_dir",
-                                        return_value=SimpleNamespace(
-                                            deleted_files=0,
-                                            deleted_bytes=0,
-                                            kept_files=0,
-                                        ),
-                                    ):
-                                        with mock.patch.object(
-                                            make_script.OpenAIClient,
-                                            "from_configs",
-                                            return_value=_FakeClient(),
-                                        ):
-                                            fake_generator = mock.Mock()
-                                            fake_generator.generate.return_value = fake_result
-                                            with mock.patch.object(
-                                                make_script,
-                                                "ScriptGenerator",
-                                                return_value=fake_generator,
-                                            ):
-                                                with mock.patch.object(
-                                                    make_script,
-                                                    "evaluate_script_quality",
-                                                    return_value={
-                                                        "status": "failed",
-                                                        "pass": False,
-                                                        "reasons": ["closing_ok"],
-                                                        "hard_fail_eligible": True,
-                                                        "failure_kind": "script_quality_rejected",
-                                                        "min_words_required": 1,
-                                                    },
-                                                ):
-                                                    with mock.patch.object(
-                                                        make_script,
-                                                        "attempt_script_quality_repair",
-                                                        return_value={
-                                                            "payload": {"lines": repaired_lines},
-                                                            "report": {"status": "passed", "pass": True, "reasons": []},
-                                                            "repaired": True,
-                                                        },
-                                                    ):
-                                                        with mock.patch.object(
-                                                            make_script,
-                                                            "evaluate_script_completeness",
-                                                            side_effect=[
-                                                                {"pass": True, "reasons": []},
-                                                                {"pass": False, "reasons": ["closing_incomplete"]},
-                                                            ],
-                                                        ):
-                                                            with mock.patch.object(make_script, "append_slo_event"):
-                                                                with mock.patch.object(
-                                                                    make_script,
-                                                                    "evaluate_slo_windows",
-                                                                    return_value={"should_rollback": False},
-                                                                ):
-                                                                    rc = make_script.main()
-            self.assertEqual(rc, 0)
-            with open(fake_result.output_path, "r", encoding="utf-8") as f:
-                persisted_payload = json.load(f)
-            self.assertEqual(persisted_payload, original_payload)
-            self.assertNotEqual(list(persisted_payload.get("lines", [])), repaired_lines)
 
     def test_manifest_final_update_runs_when_manifest_init_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -646,25 +285,8 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
                     f,
                     ensure_ascii=False,
                 )
-            captured_payload: dict[str, object] = {}
-
-            def _evaluate_spy(**kwargs):  # noqa: ANN003, ANN202
-                captured_payload["validated_payload"] = kwargs.get("validated_payload", {})
-                return {
-                    "status": "passed",
-                    "pass": True,
-                    "reasons": [],
-                    "hard_fail_eligible": False,
-                    "failure_kind": None,
-                    "min_words_required": 1,
-                }
-
-            def _repair_passthrough(**kwargs):  # noqa: ANN003, ANN202
-                return {
-                    "payload": kwargs.get("validated_payload", {}),
-                    "report": {"status": "passed", "pass": True, "reasons": []},
-                    "repaired": False,
-                }
+            with open(fake_result.quality_report_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "passed", "pass": True, "reasons": []}, f)
 
             with mock.patch.dict(
                 os.environ,
@@ -704,30 +326,15 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
                                                 "ScriptGenerator",
                                                 return_value=fake_generator,
                                             ):
-                                                with mock.patch.object(
-                                                    make_script,
-                                                    "evaluate_script_quality",
-                                                    side_effect=_evaluate_spy,
-                                                ):
+                                                with mock.patch.object(make_script, "append_slo_event"):
                                                     with mock.patch.object(
                                                         make_script,
-                                                        "attempt_script_quality_repair",
-                                                        side_effect=_repair_passthrough,
+                                                        "evaluate_slo_windows",
+                                                        return_value={"should_rollback": False},
                                                     ):
-                                                        with mock.patch.object(make_script, "append_slo_event"):
-                                                            with mock.patch.object(
-                                                                make_script,
-                                                                "evaluate_slo_windows",
-                                                                return_value={"should_rollback": False},
-                                                            ):
-                                                                rc = make_script.main()
+                                                        rc = make_script.main()
             self.assertEqual(rc, 0)
-            payload = dict(captured_payload.get("validated_payload", {}))
-            lines = list(payload.get("lines", []))
-            self.assertGreaterEqual(len(lines), 3)
-            self.assertEqual(lines[0].get("role"), "Host1")
-            self.assertEqual(lines[1].get("role"), "Host1")
-            self.assertEqual(lines[2].get("role"), "Host1")
+            self.assertTrue(os.path.exists(fake_result.quality_report_path))
 
     def test_orchestrated_retry_recovers_invalid_schema_generation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

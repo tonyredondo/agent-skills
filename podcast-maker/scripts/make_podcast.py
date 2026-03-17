@@ -55,9 +55,9 @@ from pipeline.script_postprocess import (
 from pipeline.script_quality_gate import (
     ScriptQualityGateConfig,
     ScriptQualityGateError,
-    evaluate_script_quality,
     write_quality_report,
 )
+from pipeline.structural_gate import StructuralGate
 from pipeline.slo_gates import append_slo_event, evaluate_slo_windows
 from pipeline.tts_synthesizer import TTSSynthesizer
 
@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.time()
     run_token = str(getattr(args, "run_token", "") or "").strip()
+    run_token_from_args = bool(run_token)
 
     log_cfg = LoggingConfig.from_env()
     if args.debug:
@@ -281,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     run_summary_path = os.path.join(audio_run_dir, "podcast_run_summary.json")
     run_manifest_file = run_manifest_path(checkpoint_dir=script_cfg.checkpoint_dir, episode_id=episode_id)
     run_manifest_initialized = False
+    manifest_created_for_audio = False
     manifest_v2_enabled = _env_bool("RUN_MANIFEST_V2", True)
     prior_manifest = load_manifest(run_manifest_file) if manifest_v2_enabled else None
     if not run_token and isinstance(prior_manifest, dict):
@@ -290,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     script_started_at_from_manifest: int | None = None
     script_completed_at_from_manifest: int | None = None
     manifest_mismatch_error: ScriptOperationError | None = None
+    stale_manifest_reinitialized = False
     if manifest_v2_enabled:
         if prior_manifest is None:
             try:
@@ -302,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                     audio_checkpoint_dir=audio_cfg.checkpoint_dir,
                 )
                 run_manifest_initialized = True
+                manifest_created_for_audio = True
             except Exception as exc:  # noqa: BLE001
                 logger.warn(
                     "run_manifest_init_failed",
@@ -331,8 +335,9 @@ def main(argv: list[str] | None = None) -> int:
                         error_kind=ERROR_KIND_RUN_MISMATCH,
                     )
                 else:
+                    stale_manifest_reinitialized = True
                     logger.warn(
-                        "run_manifest_stale_script_path_ignored",
+                        "run_manifest_stale_script_path_reinitializing",
                         episode_id=episode_id,
                         manifest_script_output_path=manifest_script_path,
                         provided_script_path=normalized_script_input_path,
@@ -351,23 +356,64 @@ def main(argv: list[str] | None = None) -> int:
                         script_completed_at_from_manifest = int(completed_raw)
                 except (TypeError, ValueError):
                     script_completed_at_from_manifest = None
+    if stale_manifest_reinitialized and manifest_v2_enabled and manifest_mismatch_error is None:
+        if not run_token_from_args:
+            run_token = uuid.uuid4().hex
+        try:
+            init_manifest(
+                checkpoint_dir=script_cfg.checkpoint_dir,
+                episode_id=episode_id,
+                run_token=run_token,
+                script_output_path=args.script_path,
+                script_checkpoint_dir=script_cfg.checkpoint_dir,
+                audio_checkpoint_dir=audio_cfg.checkpoint_dir,
+            )
+            run_manifest_initialized = True
+            manifest_created_for_audio = True
+            script_started_at_from_manifest = None
+            script_completed_at_from_manifest = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warn(
+                "run_manifest_reinit_failed",
+                episode_id=episode_id,
+                path=run_manifest_file,
+                error=str(exc),
+            )
+            manifest_mismatch_error = ScriptOperationError(
+                "Run manifest script_output_path does not match provided script_path",
+                error_kind=ERROR_KIND_RUN_MISMATCH,
+            )
     if run_manifest_initialized and manifest_v2_enabled:
         try:
+            manifest_updates = {
+                "run_token": run_token,
+                "script_output_path": args.script_path,
+                "audio_checkpoint_dir": audio_cfg.checkpoint_dir,
+                "status_by_stage": {"audio": "not_started"},
+                "audio": {
+                    "started_at": None,
+                    "status": "not_started",
+                    "audio_stage": "not_started",
+                    "failure_kind": None,
+                },
+            }
+            if manifest_created_for_audio:
+                manifest_script_completed_at = int(time.time())
+                if script_started_at_from_manifest is None:
+                    script_started_at_from_manifest = manifest_script_completed_at
+                if script_completed_at_from_manifest is None:
+                    script_completed_at_from_manifest = manifest_script_completed_at
+                manifest_updates["status_by_stage"] = {"script": "completed", "audio": "not_started"}
+                manifest_updates["script"] = {
+                    "started_at": script_started_at_from_manifest,
+                    "completed_at": script_completed_at_from_manifest,
+                    "status": "completed",
+                    "failure_kind": None,
+                }
             update_manifest(
                 checkpoint_dir=script_cfg.checkpoint_dir,
                 episode_id=episode_id,
-                updates={
-                    "run_token": run_token,
-                    "script_output_path": args.script_path,
-                    "audio_checkpoint_dir": audio_cfg.checkpoint_dir,
-                    "status_by_stage": {"audio": "not_started"},
-                    "audio": {
-                        "started_at": None,
-                        "status": "not_started",
-                        "audio_stage": "not_started",
-                        "failure_kind": None,
-                    },
-                },
+                updates=manifest_updates,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warn(
@@ -386,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     failure_kind = None
     client = None
     quality_report_path = ""
+    audio_quality_report_path = ""
     quality_report = None
     quality_eval_seconds = 0.0
     tts_seconds = 0.0
@@ -415,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     audio_orchestrated_retry_attempts_used = 0
     audio_orchestrated_retry_events: list[dict[str, object]] = []
+    audio_degradations: list[str] = []
 
     try:
         if manifest_mismatch_error is not None:
@@ -525,20 +573,45 @@ def main(argv: list[str] | None = None) -> int:
         quality_gate_executed = bool(quality_cfg.enabled)
         script_gate_action_effective = str(quality_cfg.action)
         if quality_cfg.enabled:
-            # This is the pre-audio quality gate. In enforce mode it blocks TTS.
+            # Pre-audio gate is structural/TTS-readiness only.
             os.makedirs(audio_run_dir, exist_ok=True)
             quality_report_path = os.path.join(audio_run_dir, "quality_report.json")
             quality_eval_started = time.time()
-            quality_report = evaluate_script_quality(
-                validated_payload=validated,
-                script_cfg=script_cfg,
-                quality_cfg=quality_cfg,
-                script_path=args.script_path,
-                client=client,
-                logger=logger,
+            structural_gate = StructuralGate(
+                max_consecutive_same_speaker=quality_cfg.max_consecutive_same_speaker
             )
+            structural_report = structural_gate.evaluate(lines=list(validated.get("lines", [])))
+            quality_report = {
+                "component": "audio_structural_gate",
+                "status": "passed" if bool(structural_report.get("pass", False)) else "failed",
+                "pass": bool(structural_report.get("pass", False)),
+                "action": quality_cfg.action,
+                "evaluator": "structural_only",
+                "profile": script_cfg.profile_name,
+                "script_path": args.script_path,
+                "line_count": int(structural_report.get("line_count", 0)),
+                "word_count": int(structural_report.get("word_count", 0)),
+                "rules": dict(structural_report.get("checks", {}) or {}),
+                "scores": {},
+                "reasons_structural": list(structural_report.get("notes", []) or []),
+                "reasons_llm": [],
+                "llm_score_failures": [],
+                "evidence_structural": {"structural_report": structural_report},
+                "llm_called": False,
+                "llm_sampled": False,
+                "llm_error": False,
+                "llm_explicit_fail": False,
+                "llm_editorial_fail": False,
+                "hard_fail_eligible": not bool(structural_report.get("pass", False)),
+                "editorial_warn_only": False,
+                "reasons": list(structural_report.get("notes", []) or []),
+                "failure_kind": (
+                    ERROR_KIND_SCRIPT_QUALITY if not bool(structural_report.get("pass", False)) else None
+                ),
+            }
             quality_eval_seconds = time.time() - quality_eval_started
             write_quality_report(quality_report_path, quality_report)
+            audio_quality_report_path = quality_report_path
             if not bool(quality_report.get("pass", False)):
                 failure_kind = ERROR_KIND_SCRIPT_QUALITY
                 if quality_cfg.action == "enforce":
@@ -587,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise
             mixer_available = False
             logger.warn("ffmpeg_missing_raw_only_mode", error=str(exc))
+            audio_degradations.append("raw_only_mode")
 
         synth = TTSSynthesizer(
             config=audio_cfg,
@@ -620,6 +694,14 @@ def main(argv: list[str] | None = None) -> int:
                 segment_count = len(tts_result.segment_files)
                 audio_run_dir = str(getattr(tts_result, "checkpoint_dir", "") or "").strip() or audio_run_dir
                 run_summary_path = os.path.join(audio_run_dir, "podcast_run_summary.json")
+                if tts_summary_path and os.path.exists(tts_summary_path):
+                    try:
+                        with open(tts_summary_path, "r", encoding="utf-8") as f:
+                            tts_summary_payload = json.load(f)
+                        if bool(tts_summary_payload.get("pause_generation_degraded", False)):
+                            audio_degradations.append("pause_generation_degraded")
+                    except Exception:
+                        pass
 
                 mix_started = time.time()
                 if mixer_available:
@@ -633,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
                     raw_path = mix_result.raw_path
                     norm_path = mix_result.norm_path
                     output_mode = "full_pipeline"
+                    audio_degradations.extend(list(getattr(mix_result, "degradations", []) or []))
                 else:
                     # Degraded path when ffmpeg is unavailable and raw-only mode
                     # is explicitly allowed.
@@ -733,12 +816,14 @@ def main(argv: list[str] | None = None) -> int:
             "audio_orchestrated_retry_attempts_used": int(audio_orchestrated_retry_attempts_used),
             "audio_orchestrated_retry_recoveries": int(len(audio_orchestrated_retry_events)),
             "audio_orchestrated_retry_events": list(audio_orchestrated_retry_events),
+            "audio_degradations": list(dict.fromkeys(audio_degradations)),
         }
         if normalized_script_path and os.path.exists(normalized_script_path):
             run_summary["normalized_script_path"] = normalized_script_path
         if quality_report is not None:
             run_summary["quality_gate_pass"] = bool(quality_report.get("pass", False))
             run_summary["quality_report_path"] = quality_report_path
+            run_summary["audio_quality_report_path"] = audio_quality_report_path or quality_report_path
         run_summary["status_by_stage"] = {"script": "completed", "audio": "completed"}
         _write_podcast_run_summary(run_summary_path, run_summary)
         run_summary_written = True
@@ -884,6 +969,7 @@ def main(argv: list[str] | None = None) -> int:
                 "audio_orchestrated_retry_recoveries": int(len(audio_orchestrated_retry_events)),
                 "audio_orchestrated_retry_events": list(audio_orchestrated_retry_events),
                 "failure_kind": failure_kind,
+                "audio_degradations": list(dict.fromkeys(audio_degradations)),
             }
             # Keep a compact stage-level status map for tooling that does not
             # parse full per-stage detail objects.
@@ -910,6 +996,7 @@ def main(argv: list[str] | None = None) -> int:
             if quality_report is not None:
                 fallback_summary["quality_gate_pass"] = bool(quality_report.get("pass", False))
                 fallback_summary["quality_report_path"] = quality_report_path
+                fallback_summary["audio_quality_report_path"] = audio_quality_report_path or quality_report_path
             try:
                 _write_podcast_run_summary(run_summary_path, fallback_summary)
             except Exception as exc:  # noqa: BLE001
@@ -925,13 +1012,32 @@ def main(argv: list[str] | None = None) -> int:
                     updates={
                         "run_token": run_token,
                         "audio_checkpoint_dir": audio_cfg.checkpoint_dir,
-                        "status_by_stage": {"audio": audio_stage_status},
+                        "status_by_stage": (
+                            {"script": "completed", "audio": audio_stage_status}
+                            if manifest_created_for_audio
+                            else {"audio": audio_stage_status}
+                        ),
+                        **(
+                            {
+                                "script": {
+                                    "started_at": script_started_at_from_manifest,
+                                    "completed_at": script_completed_at_from_manifest,
+                                    "status": "completed",
+                                    "failure_kind": None,
+                                }
+                            }
+                            if manifest_created_for_audio
+                            else {}
+                        ),
                         "audio": {
                             "status": audio_stage_status,
                             "audio_stage": audio_stage,
                             "started_at": audio_started_at,
                             "completed_at": audio_completed_at if audio_stage_status == "completed" else None,
                             "failure_kind": None if audio_stage_status == "completed" else failure_kind,
+                            "quality_report_path": quality_report_path,
+                            "audio_quality_report_path": audio_quality_report_path or quality_report_path,
+                            "degradations": list(dict.fromkeys(audio_degradations)),
                             "podcast_run_summary_path": run_summary_path,
                         },
                     },
