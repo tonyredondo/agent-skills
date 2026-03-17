@@ -245,6 +245,82 @@ class MakeScriptCliIntegrationTests(unittest.TestCase):
                 2,
             )
 
+    def test_failed_run_preserves_existing_quality_report_path_for_same_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self._base_args(tmp)
+            args.run_token = "run_preserve_quality_path"
+            script_cfg = make_script.ScriptConfig.from_env(profile_name="short")
+            script_cfg = dataclasses.replace(script_cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
+            audio_cfg = make_script.AudioConfig.from_env(profile_name="short")
+            run_summary_path = os.path.join(script_cfg.checkpoint_dir, "episode", "run_summary.json")
+            quality_report_path = os.path.join(script_cfg.checkpoint_dir, "episode", "quality_report.json")
+            os.makedirs(os.path.dirname(run_summary_path), exist_ok=True)
+            with open(quality_report_path, "w", encoding="utf-8") as f:
+                json.dump({"status": "failed", "pass": False}, f)
+            with open(run_summary_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "run_token": args.run_token,
+                        "status": "failed",
+                        "quality_report_path": quality_report_path,
+                        "script_quality_report_path": quality_report_path,
+                    },
+                    f,
+                )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCRIPT_QUALITY_GATE_SCRIPT_ACTION": "off",
+                },
+                clear=False,
+            ):
+                with mock.patch.object(make_script, "parse_args", return_value=args):
+                    with mock.patch.object(
+                        make_script,
+                        "read_text_file_with_fallback",
+                        return_value=("contenido base suficiente para la prueba", "utf-8"),
+                    ):
+                        with mock.patch.object(make_script.ScriptConfig, "from_env", return_value=script_cfg):
+                            with mock.patch.object(make_script.AudioConfig, "from_env", return_value=audio_cfg):
+                                with mock.patch.object(make_script, "ensure_min_free_disk"):
+                                    with mock.patch.object(
+                                        make_script,
+                                        "cleanup_dir",
+                                        return_value=SimpleNamespace(
+                                            deleted_files=0,
+                                            deleted_bytes=0,
+                                            kept_files=0,
+                                        ),
+                                    ):
+                                        with mock.patch.object(
+                                            make_script.OpenAIClient,
+                                            "from_configs",
+                                            return_value=_FakeClient(),
+                                        ):
+                                            fake_generator = mock.Mock()
+                                            fake_generator.generate.side_effect = make_script.ScriptOperationError(
+                                                "final quality failed",
+                                                error_kind=make_script.ERROR_KIND_SCRIPT_QUALITY,
+                                            )
+                                            with mock.patch.object(
+                                                make_script,
+                                                "ScriptGenerator",
+                                                return_value=fake_generator,
+                                            ):
+                                                with mock.patch.object(make_script, "append_slo_event"):
+                                                    with mock.patch.object(
+                                                        make_script,
+                                                        "evaluate_slo_windows",
+                                                        return_value={"should_rollback": False},
+                                                    ):
+                                                        rc = make_script.main()
+            self.assertEqual(rc, 1)
+            with open(run_summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f)
+            self.assertEqual(summary.get("quality_report_path"), quality_report_path)
+            self.assertEqual(summary.get("script_quality_report_path"), quality_report_path)
+
     def test_quality_gate_hardening_respects_configured_max_consecutive_speaker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = self._base_args(tmp)

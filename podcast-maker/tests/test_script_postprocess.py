@@ -412,6 +412,33 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertFalse(lowered[2].startswith(("por otro lado,", "ahora bien,", "exacto", "claro", "tal cual", "totalmente")))
         self.assertFalse(lowered[3].startswith(("por otro lado,", "ahora bien,", "exacto", "claro", "tal cual", "totalmente")))
 
+    def test_harden_script_structure_keeps_single_closing_synthesis(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Abrimos con el criterio operativo que decide cuando automatizar."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Y el coste aparece cuando la regla tapa excepciones y nadie entiende que paso."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "En resumen, la clave es dejar visible el criterio y no esconderlo dentro de la automatizacion."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Al final, la clave es exactamente esa: menos magia y mas criterio operativo visible."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos, nos vemos en el proximo episodio."},
+        ]
+        out = harden_script_structure(lines)
+        closing_lines = [
+            str(line.get("text") or "").lower()
+            for line in out
+            if any(token in str(line.get("text") or "").lower() for token in ("en resumen", "al final", "la clave es"))
+        ]
+        self.assertEqual(len(closing_lines), 1)
+
+    def test_harden_script_structure_bridges_support_tail_and_returns_to_thesis(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Si fallan dos ventanas, toca revertir a la ultima release sana."},
+            {"speaker": "Luis", "role": "Host2", "instructions": "x", "text": "Y cuando soporte pide contexto, ahi sale el debug bundle con diagnosticos y reportes."},
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Gracias por escucharnos, nos vemos en el proximo episodio."},
+        ]
+        out = harden_script_structure(lines)
+        tail = [str(line.get("text") or "").lower() for line in out[-3:]]
+        self.assertTrue(any("incidente o soporte" in text for text in tail))
+        self.assertTrue(any("defaults claros" in text and "evidencia" in text for text in tail))
+
     def test_normalize_speaker_turns_limits_consecutive_run(self) -> None:
         lines = [
             {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Linea 1"},

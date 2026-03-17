@@ -106,6 +106,12 @@ class FactGuard:
             expected_stage=stage_name,
             episode_plan=episode_plan,
         )
+        final_stage_rule = ""
+        if str(stage_name).strip().lower() == "final":
+            final_stage_rule = (
+                "- Because this is the final-stage script, any unresolved factual issue should default to `block` unless it is clearly fixable with a local rewrite.\n"
+                "- Unresolved `overstated_causality` in the final stage must not pass.\n"
+            )
         prompt = textwrap.dedent(
             f"""
             Verify this podcast script against the evidence map.
@@ -117,6 +123,7 @@ class FactGuard:
             - Use the matching evidence-map `claim_id` when there is one; otherwise return an empty string.
             - `origin_stage` must be `{stage_name}`.
             - `action` should be `rewrite_local` or `block`.
+            {final_stage_rule.rstrip()}
             - If no issues are found, return pass=true and empty issues list.
 
             EVIDENCE MAP:
@@ -174,9 +181,18 @@ class FactGuard:
         issues = list(report.get("issues", []) or [])
         if not issues:
             return validated_script
-        blocking = any(str(item.get("action", "")).strip() == "block" for item in issues if isinstance(item, dict))
-        if blocking:
+        repairable_issues = [
+            dict(item)
+            for item in issues
+            if isinstance(item, dict) and str(item.get("action", "")).strip().lower() == "rewrite_local"
+        ]
+        if not repairable_issues:
             return validated_script
+        blocking_issue_ids = [
+            str(item.get("issue_id", "")).strip()
+            for item in issues
+            if isinstance(item, dict) and str(item.get("action", "")).strip().lower() == "block"
+        ]
         turn_projection = [
             {
                 "line_id": str(turn.get("line_id", "")).strip(),
@@ -195,16 +211,22 @@ class FactGuard:
             Rules:
             - Preserve structure, voices, and valid facts.
             - Do not introduce new unsupported claims.
-            - Fix only the problematic lines called out in the fact-guard report.
+            - Fix only the problematic lines called out in the repairable fact-guard report.
+            - If the original report also contains `block` items elsewhere, leave those lines untouched.
             - Allowed operations only: `replace_line`, `insert_after`, `delete_line`.
             - Use the provided `line_id` values exactly.
             - Do not emit a full rewritten script.
             - Every patch object must always include `line_id`, `anchor_line_id`, and `line`.
             - Use `null` for the fields that do not apply to that operation.
             - Keep spoken text in Spanish and instructions in short English.
+            - Rewrite toward source-safe phrasing such as "sirve para", "indica", "se usa cuando", or "marca el umbral" when the issue is unsupported effect language.
+            - Remove unsupported causal, cost, trust, staffing, or urgency claims instead of sharpening them.
 
-            FACT REPORT:
-            {json.dumps(report, ensure_ascii=False, indent=2)}
+            REPAIRABLE FACT REPORT:
+            {json.dumps({**dict(report), "issues": repairable_issues, "pass": False}, ensure_ascii=False, indent=2)}
+
+            BLOCKED ISSUE IDS TO LEAVE UNCHANGED:
+            {json.dumps(blocking_issue_ids, ensure_ascii=False, indent=2)}
 
             EVIDENCE MAP:
             {json.dumps(evidence_map, ensure_ascii=False, indent=2)}

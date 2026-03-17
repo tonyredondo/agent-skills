@@ -48,6 +48,64 @@ _THESIS_SCHEMA: Dict[str, Any] = {
 }
 
 _CLAIM_PROMPT_MAX_CHARS = 14000
+_PROCEDURAL_SEGMENT_MARKERS = (
+    "=",
+    "--",
+    "./",
+    ".json",
+    ".jsonl",
+    ".zip",
+    "export ",
+    "python3 ",
+    "warn",
+    "rollback",
+    "bundle",
+    "debug",
+    "path",
+    "preset",
+    "gate",
+    "window",
+    "threshold",
+    "monitor",
+)
+_PROCEDURAL_CLAIM_MARKERS = (
+    "sirve para",
+    "se usa",
+    "indica",
+    "marca",
+    "trigger",
+    "triggers",
+    "activa",
+    "cuando",
+    "helps",
+    "ayuda",
+    "gathers",
+    "bundle",
+    "agrupa",
+    "reune",
+    "monitor",
+    "store",
+    "stores",
+    "persist",
+)
+_EFFECT_LANGUAGE_MARKERS = (
+    "cost",
+    "coste",
+    "consequence",
+    "consecuencia",
+    "impact",
+    "impacto",
+    "encarece",
+    "trust",
+    "confianza",
+    "tickets",
+    "excepc",
+    "exceptions",
+    "on-call",
+    "causa",
+    "causes",
+    "rompe",
+)
 
 
 def _sha256_text(text: str) -> str:
@@ -175,7 +233,10 @@ class EvidenceMapBuilder:
             - `support` must be `direct` or `inferred_light`.
             - Use `inferred_light` only for light contextual synthesis, not for numbers or names.
             - `topic_hint` should be a short reusable topic label.
-            - Prefer fewer, better claims over exhaustive paraphrase.
+            - Prefer compact but complete coverage of distinct operational meanings over exhaustive paraphrase.
+            - When the segment describes defaults, thresholds, paths, presets, commands, reports, or artifacts, extract purpose / trigger / usage claims if the segment supports them directly.
+            - Good claim shapes include: "X sirve para Y", "X indica Y", "X se usa cuando Z", "X dispara Y cuando Z", or "X reune A/B/C para soporte o triage".
+            - Do not invent downstream cost, staffing, trust, or urgency effects unless the segment says those effects directly.
 
             Segment {segment_idx}/{total_segments}
             source_ref={segment.get("source_ref")}
@@ -226,10 +287,45 @@ class EvidenceMapBuilder:
                     "confidence": 0.75,
                 }
             )
+        claims_out = self._prioritize_claims(segment_text=segment_text, claims=claims_out)
         return {
             "segment_summary": summary or claims_out[0]["statement"],
             "claims": claims_out,
         }
+
+    def _prioritize_claims(
+        self,
+        *,
+        segment_text: str,
+        claims: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        procedural_segment = self._looks_procedural(segment_text)
+        segment_has_effect_language = self._has_effect_language(segment_text)
+
+        def score(claim: Dict[str, Any]) -> tuple[int, float, str]:
+            statement = str(claim.get("statement", "") or "")
+            support = str(claim.get("support", "") or "").strip().lower()
+            value = 0
+            if support == "direct":
+                value += 3
+            if procedural_segment and self._looks_procedural(statement):
+                value += 3
+            if procedural_segment and self._has_effect_language(statement) and not segment_has_effect_language:
+                value -= 4
+            if procedural_segment and any(marker in statement.lower() for marker in _PROCEDURAL_CLAIM_MARKERS):
+                value += 2
+            return (value, float(claim.get("confidence", 0.0) or 0.0), statement)
+
+        ranked = sorted(list(claims), key=score, reverse=True)
+        return ranked
+
+    def _looks_procedural(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        return any(marker in lowered for marker in _PROCEDURAL_SEGMENT_MARKERS)
+
+    def _has_effect_language(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        return any(marker in lowered for marker in _EFFECT_LANGUAGE_MARKERS)
 
     def _synthesize_global_thesis(self, *, segment_maps: List[Dict[str, Any]]) -> str:
         summaries = []

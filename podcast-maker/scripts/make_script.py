@@ -763,6 +763,25 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         elapsed = time.time() - started
         run_summary_path = os.path.join(script_cfg.checkpoint_dir, episode_id, "run_summary.json")
+        if os.path.exists(run_summary_path):
+            try:
+                with open(run_summary_path, "r", encoding="utf-8") as f:
+                    existing_summary = json.load(f)
+                if isinstance(existing_summary, dict):
+                    existing_quality_report_path = str(
+                        existing_summary.get("quality_report_path")
+                        or existing_summary.get("script_quality_report_path")
+                        or ""
+                    ).strip()
+                    if existing_quality_report_path:
+                        quality_report_path = existing_quality_report_path
+                        script_quality_report_path = existing_quality_report_path
+                    if existing_quality_report_path:
+                        quality_gate_executed = True
+                        quality_stage_started = True
+                        quality_stage_finished = True
+            except Exception:
+                pass
         if status != "completed" and not _run_summary_has_current_token(
             run_summary_path,
             expected_run_token=run_token,

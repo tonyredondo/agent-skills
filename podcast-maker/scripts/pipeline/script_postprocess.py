@@ -104,6 +104,20 @@ BRIDGE_BY_LANG = {
     ),
 }
 
+INCIDENT_BRIDGE_BY_LANG = {
+    "es": "Y si eso ya cae en incidente o soporte, ahi entra el bundle para mirar la evidencia junta.",
+    "en": "And if that turns into an incident or support handoff, that is when the bundle gathers the evidence in one place.",
+    "pt": "E se isso ja vira incidente ou suporte, e ai que o bundle junta a evidencia num so lugar.",
+    "fr": "Et si cela devient un incident ou un passage au support, c'est la que le bundle rassemble les preuves au meme endroit.",
+}
+
+THESIS_RETURN_BY_LANG = {
+    "es": "Y ahi vuelve la idea central: arrancas con defaults claros, promocionas con evidencia y reviertes en cuanto las ventanas dejan de dar salud.",
+    "en": "And that brings back the core idea: start from clear defaults, promote with evidence, and roll back as soon as the health windows stop holding.",
+    "pt": "E isso devolve a ideia central: comece com defaults claros, promova com evidencia e reverta assim que as janelas deixarem de mostrar saude.",
+    "fr": "Et cela ramene a l'idee centrale : partir de defaults clairs, promouvoir avec des preuves et revenir en arriere des que les fenetres de sante se degradent.",
+}
+
 SPANISH_STOCK_OPENERS = (
     "por otro lado",
     "ahora bien",
@@ -284,6 +298,9 @@ TAIL_TRUNCATION_RE = re.compile(
     re.IGNORECASE,
 )
 COMPLETE_SENTENCE_END_RE = re.compile(r"(?:[.!?…]|[.!?…][\"'”’)\]])\s*$")
+SUPPORT_TAIL_RE = re.compile(r"\b(debug\s*bundle|bundle|diagnost|soporte|support|on-call|guardia)\b", re.IGNORECASE)
+ROLLOUT_TAIL_RE = re.compile(r"\b(rollback|revert|revertir|release|slo|ventan|promotion|promoc|health)\b", re.IGNORECASE)
+THESIS_RETURN_RE = re.compile(r"\b(default|defaults|evidenc|promoc|promot|rollback|revert|ventan|health)\b", re.IGNORECASE)
 SPANISH_OPENING_WORD_RE = re.compile(r"^\s*(?:[¡¿\"'(\[]\s*)*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)")
 SPANISH_REPETITIVE_OPENER_ALTERNATIVES = {
     "y": ("Ademas,", "De paso,", "Con eso,"),
@@ -356,6 +373,21 @@ def _has_strong_recap_signal(text: str) -> bool:
     """Return True when text contains a clear recap phrase."""
     t = _normalized_text(text)
     return any(token in t for token in RECAP_STRONG_PATTERNS)
+
+
+def _has_closing_signal(text: str) -> bool:
+    """Return True when a line sounds like recap/synthesis near the ending."""
+    normalized = _normalized_text(text)
+    return _has_strong_recap_signal(text) or any(
+        token in normalized
+        for token in (
+            "al final",
+            "la clave es",
+            "lo importante es",
+            "si algo deja",
+            "nos quedamos con",
+        )
+    )
 
 
 def _infer_language_hint(lines: List[Dict[str, str]]) -> str:
@@ -1033,6 +1065,32 @@ def sanitize_abrupt_tail(lines: List[Dict[str, str]], *, tail_window: int = 8) -
     return out
 
 
+def trim_redundant_closing_turns(lines: List[Dict[str, str]], *, tail_window: int = 6) -> List[Dict[str, str]]:
+    """Keep one earned closing synthesis near the tail and drop repeated recap turns."""
+    out = [dict(line) for line in lines]
+    if len(out) < 4:
+        return out
+    tail_start = max(0, len(out) - max(2, int(tail_window)))
+    closing_indexes = [
+        idx
+        for idx in range(tail_start, len(out))
+        if _has_closing_signal(str(out[idx].get("text") or "")) and not _is_farewell(str(out[idx].get("text") or ""))
+    ]
+    if len(closing_indexes) <= 1:
+        return out
+    keep_idx = closing_indexes[-1]
+    for idx in reversed(closing_indexes[:-1]):
+        text = str(out[idx].get("text") or "").strip()
+        if not text:
+            continue
+        if idx >= keep_idx:
+            continue
+        out.pop(idx)
+        if keep_idx > idx:
+            keep_idx -= 1
+    return out
+
+
 def smooth_abrupt_transitions(
     lines: List[Dict[str, str]],
     *,
@@ -1095,6 +1153,78 @@ def smooth_abrupt_transitions(
         out[idx]["text"] = _compose_transition_text(prefix, curr_text, language_hint=resolved_lang)
         edits += 1
         last_edit_idx = idx
+    return out
+
+
+def bridge_supporting_tail_example(
+    lines: List[Dict[str, str]],
+    *,
+    language_hint: str | None = None,
+) -> List[Dict[str, str]]:
+    """Bridge rollout logic into support/debug-bundle detail near the tail."""
+    out = [dict(line) for line in lines]
+    if len(out) < 3:
+        return out
+    resolved_lang = _resolve_language_hint(out, language_hint)
+    bridge = INCIDENT_BRIDGE_BY_LANG.get(resolved_lang, INCIDENT_BRIDGE_BY_LANG["en"])
+    tail_start = max(1, len(out) - 6)
+    for idx in range(tail_start, len(out)):
+        prev_text = str(out[idx - 1].get("text") or "").strip()
+        curr_text = str(out[idx].get("text") or "").strip()
+        if not prev_text or not curr_text:
+            continue
+        if _is_farewell(curr_text) or _has_strong_recap_signal(curr_text):
+            continue
+        if not SUPPORT_TAIL_RE.search(curr_text):
+            continue
+        if not ROLLOUT_TAIL_RE.search(prev_text):
+            continue
+        if curr_text.lower().startswith(bridge.lower()):
+            continue
+        out[idx]["text"] = _compose_transition_text(bridge, curr_text, language_hint=resolved_lang)
+        break
+    return out
+
+
+def ensure_thesis_returning_close(
+    lines: List[Dict[str, str]],
+    *,
+    language_hint: str | None = None,
+) -> List[Dict[str, str]]:
+    """Add a short thesis-returning line after a tail support example when needed."""
+    out = [dict(line) for line in lines]
+    if len(out) < 3:
+        return out
+    resolved_lang = _resolve_language_hint(out, language_hint)
+    tail_start = max(0, len(out) - 5)
+    tail_slice = out[tail_start:]
+    if not any(SUPPORT_TAIL_RE.search(str(line.get("text") or "")) for line in tail_slice):
+        return out
+    insert_idx = len(out)
+    if _is_farewell(str(out[-1].get("text") or "")):
+        insert_idx = len(out) - 1
+    anchor_idx = max(0, insert_idx - 1)
+    anchor_text = str(out[anchor_idx].get("text") or "").strip()
+    if not anchor_text:
+        return out
+    if THESIS_RETURN_RE.search(anchor_text) or _has_closing_signal(anchor_text):
+        return out
+    role = "Host1"
+    speaker = _speaker_for_role(out[:insert_idx], role=role, fallback="Host One")
+    instructions = _instructions_for_role(
+        out[:insert_idx],
+        role=role,
+        fallback="Land the thesis in one calm sentence.",
+    )
+    out.insert(
+        insert_idx,
+        {
+            "speaker": speaker,
+            "role": role,
+            "instructions": instructions,
+            "text": THESIS_RETURN_BY_LANG.get(resolved_lang, THESIS_RETURN_BY_LANG["en"]),
+        },
+    )
     return out
 
 
@@ -1177,7 +1307,10 @@ def repair_script_completeness(
     normalized = sanitize_declared_tease_intent(normalized)
     normalized = trim_repetitive_stock_openers(normalized)
     normalized = diversify_repetitive_openers(normalized)
+    normalized = trim_redundant_closing_turns(normalized)
     normalized = smooth_abrupt_transitions(normalized)
+    normalized = bridge_supporting_tail_example(normalized)
+    normalized = ensure_thesis_returning_close(normalized)
     return sanitize_abrupt_tail(normalized, tail_window=max(1, len(normalized)))
 
 
@@ -1197,6 +1330,9 @@ def harden_script_structure(
     normalized = sanitize_declared_tease_intent(normalized)
     normalized = trim_repetitive_stock_openers(normalized)
     normalized = diversify_repetitive_openers(normalized)
+    normalized = trim_redundant_closing_turns(normalized)
     normalized = smooth_abrupt_transitions(normalized)
+    normalized = bridge_supporting_tail_example(normalized)
+    normalized = ensure_thesis_returning_close(normalized)
     return sanitize_abrupt_tail(normalized, tail_window=8)
 

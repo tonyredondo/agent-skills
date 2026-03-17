@@ -132,6 +132,39 @@ class PodcastArtifactsTests(unittest.TestCase):
                 episode_plan=self.episode_plan,
             )
 
+    def test_patch_batch_collapses_repeated_replace_line_to_last_value(self) -> None:
+        artifact = self._artifact()
+        line_id = artifact["turns"][1]["line_id"]
+        patched = apply_script_patch_batch(
+            script_artifact=artifact,
+            patch_batch={
+                "patches": [
+                    {
+                        "op": "replace_line",
+                        "line_id": line_id,
+                        "line": {
+                            "speaker": "Luis",
+                            "role": "Host2",
+                            "instructions": "Curious, grounded tone.",
+                            "text": "Primer reemplazo.",
+                        },
+                    },
+                    {
+                        "op": "replace_line",
+                        "line_id": line_id,
+                        "line": {
+                            "speaker": "Luis",
+                            "role": "Host2",
+                            "instructions": "Curious, grounded tone.",
+                            "text": "Reemplazo final.",
+                        },
+                    },
+                ]
+            },
+            episode_plan=self.episode_plan,
+        )
+        self.assertEqual(patched["turns"][1]["text"], "Reemplazo final.")
+
     def test_validate_script_patch_batch_rejects_unknown_op(self) -> None:
         with self.assertRaises(ValueError):
             validate_script_patch_batch({"patches": [{"op": "merge_lines"}]})

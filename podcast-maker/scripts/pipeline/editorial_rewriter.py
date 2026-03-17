@@ -64,11 +64,24 @@ class EditorialRewriter:
             - Remove scaffold phrases and visible stitching.
             - Do not keep repeating stock turn openers such as "Por otro lado", "Ahora bien", "Exacto", "Tal cual", "Claro", or "Totalmente".
             - Keep Host1 as synthesizer/organizer.
-            - Make Host2 push harder: objections, examples, cost, tradeoff, grounding.
+            - Make Host2 push harder with objections, examples, tradeoffs, decisions, and grounding.
+            - In profile `short`, compress aggressively: keep most beats to 3-5 turns, merge adjacent Host1 fact-dumps, and do not let Host1 stack multiple list turns when one tighter turn will do.
             - Prefer direct entries into the idea, objection, or example instead of assent-only openings.
+            - In the last beat and last 4-6 turns, allow only one earned close and make each turn add a new move.
+            - Do not rebuild a second abstract recap after the closing beat has already landed.
+            - Do not keep assent-only turns near the close unless they immediately open an objection, example, cost, or decision.
             - Avoid repeating the thesis unless the narrative function changes.
             - Improve listener engagement and freshness.
             - Preserve facts and do not invent anything.
+            - Keep rules, defaults, thresholds, paths, and presets grounded as procedures or conditions; do not upgrade them into unsupported effects.
+            - Use cost, urgency, trust, staffing, or consequence language only when the evidence map states that effect directly.
+            - Prefer paraphrases such as "sirve para", "indica", "te deja", "se usa cuando", or "marca el umbral".
+            - Avoid unsupported effect phrasing such as "causa", "encarece", "sale mas caro", "siempre hay alguien", or "te rompe".
+            - Do not turn "strict" or production presets into superlatives such as "el mas exigente" unless the evidence says that verbatim.
+            - Split lines if one clause is factual and another clause drifts into interpretation.
+            - If support tooling or a debug bundle appears near the end, bridge it explicitly from rollout / rollback / health-window logic instead of opening a fresh topic.
+            - Let the debug-bundle example be the last operational proof, then make the final line return to the thesis rather than staying inside support detail.
+            - In every beat, Host2 must contribute friction or a decision, not just ask for the next batch of facts.
             - Keep spoken text in Spanish.
             - Keep instructions in short actionable English.
             - Preserve the same topic order unless the editorial report explicitly flags a transition problem.

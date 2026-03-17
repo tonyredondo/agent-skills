@@ -226,6 +226,263 @@ class ScriptGenerator:
         has_farewell = any(token in tail for token in farewell_tokens)
         return has_recap and has_farewell
 
+    def _beat_has_close_language(self, *, turns: List[Dict[str, Any]]) -> bool:
+        """Return True when turns already sound like a closing recap."""
+        if not turns:
+            return False
+        joined = " ".join(str(turn.get("text") or "").lower() for turn in turns)
+        close_tokens = (
+            "al final",
+            "la idea es simple",
+            "nos quedamos con",
+            "en resumen",
+            "gracias por escuch",
+            "nos vemos",
+            "bundle de depuracion",
+            "bundle de depuración",
+        )
+        hits = sum(1 for token in close_tokens if token in joined)
+        return hits >= 2
+
+    def _select_underlength_expansion_beat(
+        self,
+        *,
+        script_artifact: Dict[str, Any],
+        episode_plan: Dict[str, Any],
+    ) -> str:
+        """Pick deterministic beat target for in-place underlength expansion."""
+        beats = [beat for beat in list(episode_plan.get("beats", []) or []) if isinstance(beat, dict)]
+        if not beats:
+            return ""
+        turns = [dict(turn) for turn in list(script_artifact.get("turns", []) or []) if isinstance(turn, dict)]
+        coverage = dict(script_artifact.get("coverage", {}) or {})
+        line_counts_by_beat = dict(coverage.get("line_counts_by_beat", {}) or {})
+        for beat in beats:
+            beat_id = str(beat.get("beat_id", "") or "").strip()
+            if not beat_id:
+                continue
+            min_turns = 2 if int(beat.get("target_words", 0) or 0) >= 45 else 1
+            if int(line_counts_by_beat.get(beat_id, 0) or 0) < min_turns:
+                return beat_id
+        deficits: List[tuple[int, int, str]] = []
+        for idx, beat in enumerate(beats):
+            beat_id = str(beat.get("beat_id", "") or "").strip()
+            if not beat_id:
+                continue
+            beat_turns = [turn for turn in turns if str(turn.get("beat_id", "")).strip() == beat_id]
+            beat_words = sum(count_words_from_lines([turn]) for turn in beat_turns)
+            deficit = max(0, int(beat.get("target_words", 0) or 0) - beat_words)
+            deficits.append((deficit, -idx, beat_id))
+        positive_deficits = [item for item in deficits if item[0] > 0]
+        if positive_deficits:
+            positive_deficits.sort(reverse=True)
+            return positive_deficits[0][2]
+        closing_beat_id = str(beats[-1].get("beat_id", "") or "").strip()
+        closing_turns = [turn for turn in turns if str(turn.get("beat_id", "")).strip() == closing_beat_id]
+        if closing_beat_id and self._beat_has_close_language(turns=closing_turns):
+            for beat in beats:
+                beat_id = str(beat.get("beat_id", "") or "").strip()
+                if beat_id and beat_id != closing_beat_id:
+                    return beat_id
+        return str(beats[0].get("beat_id", "") or "").strip()
+
+    def _build_contextual_beat_expansion_prompt(
+        self,
+        *,
+        script_artifact: Dict[str, Any],
+        episode_plan: Dict[str, Any],
+        source_context: str,
+        target_beat_id: str,
+        min_words: int,
+        max_words: int,
+    ) -> str:
+        """Build contextual prompt to enrich one beat without appending a new ending."""
+        turns = [dict(turn) for turn in list(script_artifact.get("turns", []) or []) if isinstance(turn, dict)]
+        target_turns = [turn for turn in turns if str(turn.get("beat_id", "")).strip() == target_beat_id]
+        target_beat = next(
+            (dict(beat) for beat in list(episode_plan.get("beats", []) or []) if str(beat.get("beat_id", "")).strip() == target_beat_id),
+            {},
+        )
+        target_indexes = [
+            idx for idx, turn in enumerate(turns) if str(turn.get("beat_id", "")).strip() == target_beat_id
+        ]
+        before_context = []
+        after_context = []
+        if target_indexes:
+            start_idx = target_indexes[0]
+            end_idx = target_indexes[-1]
+            before_context = turns[max(0, start_idx - 2):start_idx]
+            after_context = turns[end_idx + 1:end_idx + 3]
+        current_words = count_words_from_lines(list(script_artifact.get("lines", []) or []))
+        remaining_to_min = max(0, int(min_words) - int(current_words))
+        source_snippet = self._compact_source_context(
+            source_context,
+            max_chars=CONTEXTUAL_FALLBACK_SOURCE_MAX_CHARS,
+        )
+        line_fields = self._line_schema_fields_prompt()
+        pace_hint_guidance = self._pace_hint_prompt_guidance()
+        return textwrap.dedent(
+            f"""
+            Expand ONLY one beat inside this podcast script.
+            Return ONLY JSON with key "lines" and fields: {line_fields}.
+
+            Hard constraints:
+            - Add 1-3 NEW lines that belong inside beat `{target_beat_id}`.
+            - These lines will be inserted before the next beat, not appended as a new ending.
+            - Do not add recap, farewell, big synthesis, or "al final" style closing language.
+            - Do not restate the full thesis; add a new move inside this beat: example, objection, cost, consequence, grounding, or decision.
+            - Preserve factual consistency with source context and current beat claims.
+            - If the beat asks for cost or consequence but the source context does not state that effect directly, switch to grounding, example, tradeoff, or decision instead.
+            - Keep rules, defaults, thresholds, paths, and presets procedural; do not upgrade them into unsupported downstream impact.
+            - Keep Host1/Host2 alternation and keep spoken text in Spanish.
+            - Keep instructions in English as short, actionable delivery guidance.
+            {pace_hint_guidance}
+            - Keep each line concise (1-2 sentences).
+            - Avoid stock openers and transition filler.
+            - Prefer factual paraphrases such as "sirve para", "indica", "te deja", "se usa cuando", or "marca el umbral".
+            - Avoid unsupported effect phrasing such as "causa", "encarece", "sale mas caro", "siempre hay alguien", or "te rompe".
+            - Do not turn "strict" or production presets into superlatives unless the source says that verbatim.
+            - Split a risky idea into separate lines if one clause is factual and another clause is inferential.
+
+            Expansion target:
+            - Current total words: {current_words}
+            - Remaining words to minimum target: {remaining_to_min}
+            - Focus beat: {json.dumps(target_beat, ensure_ascii=False, indent=2)}
+
+            PREVIOUS CONTEXT:
+            {json.dumps({"turns": before_context}, ensure_ascii=False, indent=2)}
+
+            TARGET BEAT CURRENT TURNS:
+            {json.dumps({"turns": target_turns}, ensure_ascii=False, indent=2)}
+
+            NEXT CONTEXT:
+            {json.dumps({"turns": after_context}, ensure_ascii=False, indent=2)}
+
+            SOURCE CONTEXT:
+            {source_snippet if source_snippet else "(not provided)"}
+            """
+        ).strip()
+
+    def _insert_lines_into_beat(
+        self,
+        *,
+        script_artifact: Dict[str, Any],
+        episode_plan: Dict[str, Any],
+        beat_id: str,
+        new_lines: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Insert validated lines after the last turn of one beat and rebuild artifact."""
+        target_beat_id = str(beat_id or "").strip()
+        turns = [dict(turn) for turn in list(script_artifact.get("turns", []) or []) if isinstance(turn, dict)]
+        if not turns or not target_beat_id:
+            return script_artifact
+        insert_after = max(
+            (idx for idx, turn in enumerate(turns) if str(turn.get("beat_id", "")).strip() == target_beat_id),
+            default=-1,
+        )
+        if insert_after < 0:
+            return script_artifact
+        beat_meta = next(
+            (dict(beat) for beat in list(episode_plan.get("beats", []) or []) if str(beat.get("beat_id", "")).strip() == target_beat_id),
+            {},
+        )
+        can_cut = bool(beat_meta.get("can_cut", False))
+        validated_lines = validate_script_payload({"lines": list(new_lines or [])}).get("lines", [])
+        if not validated_lines:
+            return script_artifact
+        raw_turns = list(turns)
+        insert_idx = insert_after + 1
+        for line in validated_lines:
+            raw_turns.insert(
+                insert_idx,
+                {
+                    **line,
+                    "beat_id": target_beat_id,
+                    "can_cut": can_cut,
+                },
+            )
+            insert_idx += 1
+        rebuilt_lines: List[Dict[str, Any]] = []
+        for turn in raw_turns:
+            payload = {
+                "speaker": str(turn.get("speaker", "")).strip(),
+                "role": str(turn.get("role", "")).strip(),
+                "instructions": str(turn.get("instructions", "")).strip(),
+                "text": str(turn.get("text", "")).strip(),
+            }
+            pace_hint = str(turn.get("pace_hint", "") or "").strip()
+            if pace_hint:
+                payload["pace_hint"] = pace_hint
+            rebuilt_lines.append(payload)
+        return build_script_artifact(
+            stage=str(script_artifact.get("stage") or "rewritten"),
+            episode_id=str(script_artifact.get("episode_id") or ""),
+            run_token=str(script_artifact.get("run_token") or ""),
+            source_digest=str(script_artifact.get("source_digest") or ""),
+            plan_ref=str(script_artifact.get("plan_ref") or ""),
+            plan_digest=str(script_artifact.get("plan_digest") or ""),
+            lines=rebuilt_lines,
+            episode_plan=episode_plan,
+            raw_turns=raw_turns,
+            prior_artifact=script_artifact,
+            target_word_count=script_artifact.get("target_word_count"),
+        )
+
+    def _request_contextual_beat_expansion_lines(
+        self,
+        *,
+        script_artifact: Dict[str, Any],
+        episode_plan: Dict[str, Any],
+        min_words: int,
+        max_words: int,
+        source_context: str,
+        target_beat_id: str,
+        continuation_stage: str,
+    ) -> List[Dict[str, Any]]:
+        """Ask LLM for beat-local expansion lines instead of tail padding."""
+        if not self._can_use_contextual_fallback_llm() or not str(target_beat_id or "").strip():
+            return []
+        try:
+            prompt = self._build_contextual_beat_expansion_prompt(
+                script_artifact=script_artifact,
+                episode_plan=episode_plan,
+                source_context=source_context,
+                target_beat_id=target_beat_id,
+                min_words=min_words,
+                max_words=max_words,
+            )
+            stage = f"{continuation_stage}_contextual_beat_expand"
+            max_output_tokens = max(500, min(1800, int(self.config.max_output_tokens_continuation)))
+            repaired_raw = self.client.generate_script_json(
+                prompt=prompt,
+                schema=SCRIPT_JSON_SCHEMA,
+                max_output_tokens=max_output_tokens,
+                stage=stage,
+            )
+            candidate_lines = validate_script_payload(repaired_raw)["lines"]
+            filtered_lines: List[Dict[str, Any]] = []
+            seen_texts: set[str] = set()
+            for line in candidate_lines:
+                text = str(line.get("text", "") or "").strip()
+                normalized = re.sub(r"\s+", " ", text.lower())
+                if not text:
+                    continue
+                if any(token in normalized for token in ("gracias por escuch", "nos vemos", "al final", "en resumen", "nos quedamos con")):
+                    continue
+                if normalized in seen_texts:
+                    continue
+                seen_texts.add(normalized)
+                filtered_lines.append(line)
+            return filtered_lines
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warn(
+                "continuation_contextual_beat_expand_failed",
+                stage=continuation_stage,
+                beat_id=target_beat_id,
+                error=str(exc),
+            )
+            return []
+
     def _build_contextual_continuation_fallback_prompt(
         self,
         *,
@@ -2385,6 +2642,9 @@ class ScriptGenerator:
         """Only high-severity or explicit block actions stop the pipeline."""
         if bool(report.get("pass", False)):
             return False
+        stage_name = str(report.get("stage", "") or "").strip().lower()
+        if stage_name == "final" and list(report.get("issues", []) or []):
+            return True
         for issue in list(report.get("issues", []) or []):
             if not isinstance(issue, dict):
                 continue
@@ -2393,6 +2653,32 @@ class ScriptGenerator:
             if str(issue.get("severity", "")).strip().lower() == "high":
                 return True
         return False
+
+    def _fact_guard_blocking_issue_count(self, report: Dict[str, Any]) -> int:
+        count = 0
+        for issue in list(report.get("issues", []) or []):
+            if not isinstance(issue, dict):
+                continue
+            action = str(issue.get("action", "")).strip().lower()
+            severity = str(issue.get("severity", "")).strip().lower()
+            if action == "block" or severity == "high":
+                count += 1
+        return count
+
+    def _fact_guard_severity_score(self, report: Dict[str, Any]) -> int:
+        weights = {"low": 1, "medium": 2, "high": 3}
+        return sum(
+            weights.get(str(issue.get("severity", "")).strip().lower(), 0)
+            for issue in list(report.get("issues", []) or [])
+            if isinstance(issue, dict)
+        )
+
+    def _fact_guard_report_escalated(self, *, before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+        if self._fact_guard_blocking_issue_count(after) > self._fact_guard_blocking_issue_count(before):
+            return True
+        if self._fact_guard_severity_score(after) > self._fact_guard_severity_score(before):
+            return True
+        return len(list(after.get("issues", []) or [])) > len(list(before.get("issues", []) or []))
 
     def _generate_redesigned(
         self,
@@ -2479,6 +2765,31 @@ class ScriptGenerator:
             if "phase_status" not in state or not isinstance(state.get("phase_status"), dict):
                 state["phase_status"] = {}
             store.save(state)
+            if resume and str(state.get("status", "")).strip().lower() == "completed" and os.path.exists(output_path):
+                existing_quality_report_path = str(
+                    state.get("quality_report_path")
+                    or state.get("script_quality_report_path")
+                    or artifact_paths.get("quality_report", "")
+                ).strip()
+                existing_summary: Dict[str, Any] = {}
+                if os.path.exists(run_summary_path):
+                    try:
+                        existing_summary = read_json_artifact(run_summary_path)
+                    except Exception:  # noqa: BLE001
+                        existing_summary = {}
+                return ScriptGenerationResult(
+                    episode_id=resolved_episode_id,
+                    output_path=output_path,
+                    line_count=int(existing_summary.get("line_count", len(list(state.get("lines", []) or [])))),
+                    word_count=int(existing_summary.get("word_count", int(state.get("current_word_count", 0) or 0))),
+                    checkpoint_path=store.checkpoint_path,
+                    run_summary_path=run_summary_path,
+                    script_retry_rate=float(existing_summary.get("script_retry_rate", 0.0) or 0.0),
+                    invalid_schema_rate=float(existing_summary.get("invalid_schema_rate", 0.0) or 0.0),
+                    schema_validation_failures=int(existing_summary.get("schema_validation_failures", 0) or 0),
+                    quality_report_path=existing_quality_report_path,
+                    artifact_paths=artifact_paths,
+                )
             source_validation = self._validate_source_length(
                 source_word_count=source_word_count,
                 min_words=min_words,
@@ -2521,7 +2832,7 @@ class ScriptGenerator:
                     episode_id=resolved_episode_id,
                     run_token=effective_run_token,
                     target_minutes=self.config.target_minutes,
-                    chunk_target_minutes=self.config.pre_summary_chunk_target_minutes,
+                    chunk_target_minutes=self.config.chunk_target_minutes,
                     words_per_min=self.config.words_per_min,
                 )
                 write_json_artifact(path=artifact_paths["evidence_map"], payload=evidence_map)
@@ -2699,26 +3010,25 @@ class ScriptGenerator:
                     self._mark_phase_state(state=state, store=store, phase_name="editorial_rewrite", status="completed")
                 while True:
                     if count_words_from_lines(list(rewritten_artifact.get("lines", []))) < int(min_words):
-                        expansion_lines = self._request_contextual_continuation_fallback_lines(
-                            lines_so_far=list(rewritten_artifact.get("lines", [])),
+                        target_beat_id = self._select_underlength_expansion_beat(
+                            script_artifact=rewritten_artifact,
+                            episode_plan=episode_plan,
+                        )
+                        expansion_lines = self._request_contextual_beat_expansion_lines(
+                            script_artifact=rewritten_artifact,
+                            episode_plan=episode_plan,
                             min_words=min_words,
                             max_words=max_words,
                             source_context=source_for_generation,
+                            target_beat_id=target_beat_id,
                             continuation_stage="editorial_underlength",
-                            mode="expand",
                         )
                         if expansion_lines:
-                            rewritten_artifact = build_script_artifact(
-                                stage="rewritten",
-                                episode_id=str(rewritten_artifact.get("episode_id")),
-                                run_token=str(rewritten_artifact.get("run_token")),
-                                source_digest=str(rewritten_artifact.get("source_digest")),
-                                plan_ref=str(rewritten_artifact.get("plan_ref")),
-                                plan_digest=str(rewritten_artifact.get("plan_digest")),
-                                lines=list(rewritten_artifact.get("lines", [])) + list(expansion_lines),
+                            rewritten_artifact = self._insert_lines_into_beat(
+                                script_artifact=rewritten_artifact,
                                 episode_plan=episode_plan,
-                                prior_artifact=rewritten_artifact,
-                                target_word_count=rewritten_artifact.get("target_word_count"),
+                                beat_id=target_beat_id,
+                                new_lines=expansion_lines,
                             )
                             write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
                             write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
@@ -2747,7 +3057,6 @@ class ScriptGenerator:
                     write_json_artifact(path=artifact_paths["editorial_report"], payload=editorial_report)
                     phase_seconds["editorial_gate"] += round(time.time() - phase_started, 3)
                     if bool(editorial_report.get("pass", False)):
-                        self._mark_phase_state(state=state, store=store, phase_name="editorial_gate", status="completed")
                         break
                     if round_used >= max_rewrite_rounds:
                         break
@@ -2776,57 +3085,6 @@ class ScriptGenerator:
                 )
             write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
             write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
-
-            fact_guard_final_report = self._load_validated_artifact(
-                state=state,
-                phase_name="fact_guard_final",
-                path=artifact_paths["fact_guard_report_final"],
-                validator=validate_fact_guard_report,
-                expected_identity={
-                    "run_token": effective_run_token,
-                    "source_digest": source_digest,
-                    "plan_digest": plan_digest,
-                    "internal_artifact_digest": str(rewritten_artifact.get("internal_artifact_digest", "")),
-                },
-            )
-            if fact_guard_final_report is None:
-                self._last_stage = "fact_guard_final"
-                phase_started = time.time()
-                fact_guard_final_report = fact_guard.validate(
-                    script_artifact=rewritten_artifact,
-                    evidence_map=evidence_map,
-                    episode_plan=episode_plan,
-                    stage_name="rewritten",
-                )
-                if not bool(fact_guard_final_report.get("pass", False)):
-                    repaired = fact_guard.repair(
-                        script_artifact=rewritten_artifact,
-                        evidence_map=evidence_map,
-                        episode_plan=episode_plan,
-                        report=fact_guard_final_report,
-                        stage_name="rewritten",
-                    )
-                    rewritten_artifact = repaired
-                    write_json_artifact(path=artifact_paths["rewritten_script_final"], payload=rewritten_artifact)
-                    write_json_artifact(path=artifact_paths["rewritten_script"], payload=rewritten_artifact)
-                    fact_guard_final_report = fact_guard.validate(
-                        script_artifact=rewritten_artifact,
-                        evidence_map=evidence_map,
-                        episode_plan=episode_plan,
-                        stage_name="rewritten",
-                    )
-                write_json_artifact(
-                    path=artifact_paths["fact_guard_report_final"],
-                    payload=fact_guard_final_report,
-                )
-                phase_seconds["fact_guard_final"] = round(time.time() - phase_started, 3)
-                self._mark_phase_state(state=state, store=store, phase_name="fact_guard_final", status="completed")
-            if self._fact_guard_blocks(fact_guard_final_report):
-                raise ScriptOperationError(
-                    "Final script failed factual validation",
-                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
-                )
-
             self._last_stage = "structural_finalize"
             phase_started = time.time()
             structural_gate = StructuralGate(max_consecutive_same_speaker=self._max_consecutive_same_speaker())
@@ -2839,7 +3097,6 @@ class ScriptGenerator:
                     "Script failed structural validation",
                     error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
                 )
-
             final_artifact = build_script_artifact(
                 stage="final",
                 episode_id=resolved_episode_id,
@@ -2852,7 +3109,95 @@ class ScriptGenerator:
                 prior_artifact=rewritten_artifact,
                 target_word_count=rewritten_artifact.get("target_word_count"),
             )
-            quality_editorial_report = EditorialGate(client=None, logger=self.logger).evaluate(
+            fact_guard_final_report = self._load_validated_artifact(
+                state=state,
+                phase_name="fact_guard_final",
+                path=artifact_paths["fact_guard_report_final"],
+                validator=validate_fact_guard_report,
+                expected_identity={
+                    "run_token": effective_run_token,
+                    "source_digest": source_digest,
+                    "plan_digest": plan_digest,
+                    "internal_artifact_digest": str(final_artifact.get("internal_artifact_digest", "")),
+                },
+            )
+            if fact_guard_final_report is None:
+                self._last_stage = "fact_guard_final"
+                phase_started = time.time()
+                write_json_artifact(
+                    path=artifact_paths["final_evaluated_pre_fact_repair"],
+                    payload=final_artifact,
+                )
+                initial_fact_guard_final_report = fact_guard.validate(
+                    script_artifact=final_artifact,
+                    evidence_map=evidence_map,
+                    episode_plan=episode_plan,
+                    stage_name="final",
+                )
+                fact_guard_final_report = initial_fact_guard_final_report
+                if not bool(initial_fact_guard_final_report.get("pass", False)):
+                    repaired_final_artifact = fact_guard.repair(
+                        script_artifact=final_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        report=initial_fact_guard_final_report,
+                        stage_name="final",
+                    )
+                    if str(repaired_final_artifact.get("internal_artifact_digest", "")) != str(final_artifact.get("internal_artifact_digest", "")):
+                        candidate_final_lines = structural_gate.finalize(lines=list(repaired_final_artifact.get("lines", [])))
+                        candidate_structural_report = structural_gate.evaluate(lines=candidate_final_lines)
+                        if not bool(candidate_structural_report.get("pass", False)):
+                            raise ScriptOperationError(
+                                "Script failed structural validation after final fact repair",
+                                error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
+                            )
+                        candidate_final_artifact = build_script_artifact(
+                            stage="final",
+                            episode_id=resolved_episode_id,
+                            run_token=effective_run_token,
+                            source_digest=source_digest,
+                            plan_ref=str(repaired_final_artifact.get("plan_ref")),
+                            plan_digest=plan_digest,
+                            lines=candidate_final_lines,
+                            episode_plan=episode_plan,
+                            prior_artifact=repaired_final_artifact,
+                            target_word_count=repaired_final_artifact.get("target_word_count"),
+                        )
+                        candidate_fact_guard_final_report = fact_guard.validate(
+                            script_artifact=candidate_final_artifact,
+                            evidence_map=evidence_map,
+                            episode_plan=episode_plan,
+                            stage_name="final",
+                        )
+                        if self._fact_guard_report_escalated(
+                            before=initial_fact_guard_final_report,
+                            after=candidate_fact_guard_final_report,
+                        ):
+                            self.logger.warn(
+                                "fact_guard_final_repair_escalated",
+                                before_issues=len(list(initial_fact_guard_final_report.get("issues", []) or [])),
+                                after_issues=len(list(candidate_fact_guard_final_report.get("issues", []) or [])),
+                                before_blocking=self._fact_guard_blocking_issue_count(initial_fact_guard_final_report),
+                                after_blocking=self._fact_guard_blocking_issue_count(candidate_fact_guard_final_report),
+                            )
+                        else:
+                            final_artifact = candidate_final_artifact
+                            final_lines = candidate_final_lines
+                            structural_report = candidate_structural_report
+                            fact_guard_final_report = candidate_fact_guard_final_report
+                            write_json_artifact(path=artifact_paths["structural_report"], payload=structural_report)
+                write_json_artifact(
+                    path=artifact_paths["final_evaluated_post_fact_repair"],
+                    payload=final_artifact,
+                )
+                write_json_artifact(
+                    path=artifact_paths["fact_guard_report_final"],
+                    payload=fact_guard_final_report,
+                )
+                phase_seconds["fact_guard_final"] = round(time.time() - phase_started, 3)
+                self._mark_phase_state(state=state, store=store, phase_name="fact_guard_final", status="completed")
+            phase_started = time.time()
+            quality_editorial_report = EditorialGate(client=self.client, logger=self.logger).evaluate(
                 script_artifact=final_artifact,
                 script_lines=list(final_artifact.get("lines", [])),
                 episode_plan=episode_plan,
@@ -2872,6 +3217,9 @@ class ScriptGenerator:
                     "public_payload_digest": final_artifact.get("public_payload_digest", ""),
                 }
             )
+            write_json_artifact(path=artifact_paths["editorial_report"], payload=quality_editorial_report)
+            phase_seconds["editorial_gate"] += round(time.time() - phase_started, 3)
+            self._mark_phase_state(state=state, store=store, phase_name="editorial_gate", status="completed")
             public_payload = build_public_script_payload(artifact=final_artifact)
             write_script_payload(path=output_path, lines=final_lines)
             quality_report = self._build_quality_report_payload(
@@ -2884,9 +3232,27 @@ class ScriptGenerator:
             quality_report["structural_report_path"] = artifact_paths["structural_report"]
             quality_report["editorial_report_path"] = artifact_paths["editorial_report"]
             quality_report["fact_guard_report_path"] = artifact_paths["fact_guard_report_final"]
+            quality_report["final_evaluated_pre_fact_repair_path"] = artifact_paths["final_evaluated_pre_fact_repair"]
+            quality_report["final_evaluated_post_fact_repair_path"] = artifact_paths["final_evaluated_post_fact_repair"]
             quality_report_path = artifact_paths["quality_report"]
             quality_report["script_quality_report_path"] = quality_report_path
             write_json_artifact(path=quality_report_path, payload=quality_report)
+            self._mark_phase_state(state=state, store=store, phase_name="structural_finalize", status="completed")
+            if not bool(quality_editorial_report.get("pass", False)):
+                raise ScriptOperationError(
+                    "Final script failed editorial validation",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
+            if self._fact_guard_blocks(fact_guard_final_report):
+                raise ScriptOperationError(
+                    "Final script failed factual validation",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
+            if not bool(quality_report.get("pass", False)):
+                raise ScriptOperationError(
+                    "Final script failed quality validation",
+                    error_kind=ERROR_KIND_SCRIPT_QUALITY,
+                )
 
             state.update(
                 {
@@ -2902,7 +3268,6 @@ class ScriptGenerator:
                     "artifact_paths": artifact_paths,
                 }
             )
-            self._mark_phase_state(state=state, store=store, phase_name="structural_finalize", status="completed")
             state["status"] = "completed"
             store.save(state)
             run_summary = {

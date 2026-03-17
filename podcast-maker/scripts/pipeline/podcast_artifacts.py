@@ -16,6 +16,8 @@ DRAFT_SCRIPT_RAW_FILENAME = "draft_script_raw.json"
 DRAFT_SCRIPT_FACT_CHECKED_FILENAME = "draft_script_fact_checked.json"
 REWRITTEN_SCRIPT_FILENAME = "rewritten_script.json"
 REWRITTEN_SCRIPT_FINAL_FILENAME = "rewritten_script_final.json"
+FINAL_EVALUATED_PRE_FACT_REPAIR_FILENAME = "final_evaluated_pre_fact_repair.json"
+FINAL_EVALUATED_POST_FACT_REPAIR_FILENAME = "final_evaluated_post_fact_repair.json"
 EDITORIAL_REPORT_FILENAME = "editorial_report.json"
 FACT_GUARD_DRAFT_FILENAME = "fact_guard_report_draft.json"
 FACT_GUARD_FINAL_FILENAME = "fact_guard_report_final.json"
@@ -77,6 +79,7 @@ EDITORIAL_FAILURE_TYPES = {
     "briefing_tone",
     "overlong_for_profile",
     "earned_closing_missing",
+    "repeated_closing_tail",
     "meta_opening",
 }
 
@@ -91,6 +94,8 @@ def build_script_artifact_paths(*, run_dir: str) -> Dict[str, str]:
         "draft_script_fact_checked": os.path.join(run_dir, DRAFT_SCRIPT_FACT_CHECKED_FILENAME),
         "rewritten_script": os.path.join(run_dir, REWRITTEN_SCRIPT_FILENAME),
         "rewritten_script_final": os.path.join(run_dir, REWRITTEN_SCRIPT_FINAL_FILENAME),
+        "final_evaluated_pre_fact_repair": os.path.join(run_dir, FINAL_EVALUATED_PRE_FACT_REPAIR_FILENAME),
+        "final_evaluated_post_fact_repair": os.path.join(run_dir, FINAL_EVALUATED_POST_FACT_REPAIR_FILENAME),
         "editorial_report": os.path.join(run_dir, EDITORIAL_REPORT_FILENAME),
         "fact_guard_report_draft": os.path.join(run_dir, FACT_GUARD_DRAFT_FILENAME),
         "fact_guard_report_final": os.path.join(run_dir, FACT_GUARD_FINAL_FILENAME),
@@ -683,7 +688,9 @@ def validate_editorial_report(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "scaffold_phrase_hits",
                 "stock_opener_cluster_hits",
                 "long_turn_count",
+                "dense_turn_indexes",
                 "abrupt_transition_count",
+                "tail_transition_count",
                 "question_ratio",
                 "host2_push_ratio",
                 "host2_turn_ratio",
@@ -695,6 +702,8 @@ def validate_editorial_report(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "missing_non_cuttable_beat_count",
                 "host2_missing_non_cuttable_beat_count",
                 "compressed_beat_count",
+                "repeated_closing_tail_indexes",
+                "closing_beat_id",
             )
         },
         "failures": failures,
@@ -813,9 +822,37 @@ def apply_script_patch_batch(
     turns = [dict(turn) for turn in list(validated_artifact.get("turns", []) or [])]
     if not turns:
         raise ValueError("script artifact has no turns")
+    target_ops: Dict[str, List[tuple[int, Dict[str, Any]]]] = {}
+    ordered_patches: List[Dict[str, Any]] = []
+    for patch_idx, patch in enumerate(list(validated_batch.get("patches", []) or [])):
+        op = str(patch.get("op", "")).strip()
+        if op == "insert_after":
+            ordered_patches.append(dict(patch))
+            continue
+        target_line_id = str(patch.get("line_id", "")).strip()
+        if not target_line_id:
+            raise ValueError("patch target line_id missing")
+        target_ops.setdefault(target_line_id, []).append((patch_idx, dict(patch)))
+    keep_index_by_target: Dict[str, int] = {}
+    for target_line_id, patches_for_target in target_ops.items():
+        ops = {str(item.get("op", "")).strip() for _, item in patches_for_target}
+        if ops == {"replace_line"}:
+            keep_index_by_target[target_line_id] = int(patches_for_target[-1][0])
+            continue
+        if ops == {"delete_line"}:
+            keep_index_by_target[target_line_id] = int(patches_for_target[0][0])
+            continue
+        raise ValueError(f"incompatible batch: repeated target line_id {target_line_id}")
+    for patch_idx, patch in enumerate(list(validated_batch.get("patches", []) or [])):
+        op = str(patch.get("op", "")).strip()
+        if op == "insert_after":
+            continue
+        target_line_id = str(patch.get("line_id", "")).strip()
+        if keep_index_by_target.get(target_line_id) == patch_idx:
+            ordered_patches.append(dict(patch))
     consumed_targets: set[str] = set()
     insert_after_tail: Dict[str, int] = {}
-    for patch in list(validated_batch.get("patches", []) or []):
+    for patch in ordered_patches:
         op = str(patch.get("op", "")).strip()
         if op == "insert_after":
             anchor_line_id = str(patch.get("anchor_line_id", "")).strip()

@@ -56,6 +56,14 @@ _HOST2_PUSH_RE = re.compile(
 )
 _THESIS_REPEAT_RE = re.compile(r"(?:en el fondo|la idea central|la tesis|esto va de|lo importante es)", re.IGNORECASE)
 _BRIEFING_TONE_RE = re.compile(r"(?:en resumen|a continuacion|en este episodio|vamos a recorrer|comenzamos con)", re.IGNORECASE)
+_CLOSE_SIGNAL_RE = re.compile(
+    r"(?:en resumen|nos quedamos con|al final|la clave es|lo importante es|si algo deja|la idea central)",
+    re.IGNORECASE,
+)
+_TAIL_TRANSITION_RE = re.compile(
+    r"^(?:con eso|aun asi|visto asi|y ahi|de paso|por otro lado|ahora bien|dicho esto)\b",
+    re.IGNORECASE,
+)
 
 _LLM_EDITORIAL_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -115,6 +123,11 @@ def _lexical_overlap(a: str, b: str) -> float:
     return float(len(tokens_a.intersection(tokens_b))) / float(max(1, len(tokens_b)))
 
 
+def _clause_count(text: str) -> int:
+    parts = [chunk.strip() for chunk in re.split(r"[,:;.!?]+", str(text or "")) if chunk.strip()]
+    return len(parts)
+
+
 def _normalized_template_values() -> List[str]:
     out: List[str] = []
     for mapping in (RECAP_BY_LANG, FAREWELL_BY_LANG, TAIL_QUESTION_ANSWER_BY_LANG):
@@ -159,6 +172,7 @@ class EditorialGate:
             max_words=max_words,
         )
         failures = self._build_failures(
+            script_artifact=script_artifact,
             script_lines=script_lines,
             llm_scores=llm_scores,
             llm_reasons=llm_reasons,
@@ -170,7 +184,7 @@ class EditorialGate:
         report = validate_editorial_report(
             {
                 "artifact_version": 1,
-                "stage": "rewritten",
+                "stage": str((script_artifact or {}).get("stage") or "rewritten"),
                 "profile": profile_name,
                 "pass": passed,
                 "scores": llm_scores,
@@ -288,9 +302,15 @@ class EditorialGate:
         long_turn_limits = {"short": 48, "standard": 58, "long": 64}
         long_turn_limit = long_turn_limits.get(str(profile_name or "").strip().lower(), 58)
         long_turn_count = 0
-        for line in script_lines:
-            if len(str(line.get("text", "") or "").split()) > long_turn_limit:
+        dense_turn_indexes: List[int] = []
+        for idx, line in enumerate(script_lines):
+            text = str(line.get("text", "") or "")
+            word_count = len(text.split())
+            clause_count = _clause_count(text)
+            if word_count > long_turn_limit:
                 long_turn_count += 1
+            if word_count >= max(34, long_turn_limit - 10) and clause_count >= 3:
+                dense_turn_indexes.append(idx)
         abrupt_transition_count = 0
         for idx in range(1, len(script_lines)):
             prev_text = str(script_lines[idx - 1].get("text", "") or "")
@@ -327,6 +347,7 @@ class EditorialGate:
             if template and template in normalized_joined:
                 template_reuse_hits += 1
         coverage = dict((script_artifact or {}).get("coverage", {}) or {})
+        turns = [dict(turn) for turn in list((script_artifact or {}).get("turns", []) or []) if isinstance(turn, dict)]
         overlong_for_profile = False
         word_count = count_words_from_lines(script_lines)
         line_count = len(script_lines)
@@ -354,12 +375,48 @@ class EditorialGate:
                             break
         thesis_repetition_hits = sum(1 for line in script_lines if _THESIS_REPEAT_RE.search(str(line.get("text", "") or "")))
         briefing_tone_hits = sum(1 for line in script_lines if _BRIEFING_TONE_RE.search(str(line.get("text", "") or "")))
+        repeated_closing_tail_indexes: List[int] = []
+        tail_transition_count = 0
+        tail_start = max(0, len(script_lines) - 6)
+        prior_close_idx = -1
+        closing_beat_id = ""
+        if turns:
+            closing_beat_id = str(turns[-1].get("beat_id", "") or "").strip()
+        for idx in range(tail_start, len(script_lines)):
+            text = str(script_lines[idx].get("text", "") or "")
+            if idx > tail_start and _TAIL_TRANSITION_RE.search(text):
+                tail_transition_count += 1
+            if not _CLOSE_SIGNAL_RE.search(text):
+                continue
+            if prior_close_idx >= 0:
+                repeated_closing_tail_indexes.append(idx)
+            prior_close_idx = idx
+        for idx in range(max(tail_start + 1, 1), len(script_lines)):
+            curr_text = str(script_lines[idx].get("text", "") or "")
+            prev_text = str(script_lines[idx - 1].get("text", "") or "")
+            overlap = _lexical_overlap(prev_text, curr_text)
+            if overlap >= 0.58 and (
+                _CLOSE_SIGNAL_RE.search(curr_text) or _CLOSE_SIGNAL_RE.search(prev_text)
+            ):
+                repeated_closing_tail_indexes.append(idx)
+        if closing_beat_id:
+            closing_beat_indexes = [
+                idx for idx, turn in enumerate(turns) if str(turn.get("beat_id", "")).strip() == closing_beat_id
+            ]
+            closing_signal_indexes = [
+                idx for idx in closing_beat_indexes if idx < len(script_lines) and _CLOSE_SIGNAL_RE.search(str(script_lines[idx].get("text", "") or ""))
+            ]
+            if len(closing_signal_indexes) > 1:
+                repeated_closing_tail_indexes.extend(closing_signal_indexes[1:])
+        repeated_closing_tail_indexes = sorted(set(idx for idx in repeated_closing_tail_indexes if idx >= tail_start))
         return {
             "scaffold_phrase_hits": scaffold_phrase_hits,
             "repeated_scaffolds": repeated_scaffolds,
             "stock_opener_cluster_hits": stock_opener_cluster_hits,
             "long_turn_count": long_turn_count,
+            "dense_turn_indexes": dense_turn_indexes,
             "abrupt_transition_count": abrupt_transition_count,
+            "tail_transition_count": tail_transition_count,
             "question_ratio": round(question_ratio, 4),
             "max_question_streak": max_question_streak,
             "host2_push_ratio": round(host2_push_ratio, 4),
@@ -368,6 +425,8 @@ class EditorialGate:
             "overlong_for_profile": bool(overlong_for_profile),
             "thesis_repetition_hits": thesis_repetition_hits,
             "briefing_tone_hits": briefing_tone_hits,
+            "repeated_closing_tail_indexes": repeated_closing_tail_indexes,
+            "closing_beat_id": closing_beat_id,
             "word_count": word_count,
             "line_count": line_count,
             "missing_non_cuttable_beat_count": len(missing_non_cuttable),
@@ -401,6 +460,7 @@ class EditorialGate:
     def _build_failures(
         self,
         *,
+        script_artifact: Dict[str, Any] | None,
         script_lines: List[Dict[str, Any]],
         llm_scores: Dict[str, float],
         llm_reasons: List[str],
@@ -409,6 +469,7 @@ class EditorialGate:
         min_words: int,
     ) -> List[Dict[str, Any]]:
         failures: List[Dict[str, Any]] = []
+        turns = [dict(turn) for turn in list((script_artifact or {}).get("turns", []) or []) if isinstance(turn, dict)]
         if int(deterministic.get("scaffold_phrase_hits", 0)) >= 2 or int(deterministic.get("stock_opener_cluster_hits", 0)) > 0:
             failures.append(
                 self._failure(
@@ -433,7 +494,11 @@ class EditorialGate:
             str(profile_name or "").strip().lower(),
             3,
         )
-        dense_by_structure = int(deterministic.get("long_turn_count", 0)) > long_turn_allowance
+        dense_indexes = [max(0, int(idx)) for idx in list(deterministic.get("dense_turn_indexes", []) or [])]
+        dense_by_structure = (
+            int(deterministic.get("long_turn_count", 0)) > long_turn_allowance
+            or len(dense_indexes) >= max(1, long_turn_allowance)
+        )
         dense_by_llm = dense_by_structure and llm_scores.get("density_control", 5.0) < 3.4
         if dense_by_structure or dense_by_llm:
             failures.append(
@@ -443,6 +508,23 @@ class EditorialGate:
                     script_lines=script_lines,
                     reason="hay turnos densos o con mini-ensayo oralizado",
                     action="decompress_dense_turn",
+                    line_indexes=dense_indexes,
+                    beat_ids=self._beat_ids_for_line_indexes(turns=turns, line_indexes=dense_indexes),
+                )
+            )
+        repeated_tail_indexes = [
+            max(0, int(idx)) for idx in list(deterministic.get("repeated_closing_tail_indexes", []) or [])
+        ]
+        if repeated_tail_indexes or int(deterministic.get("tail_transition_count", 0)) >= 3:
+            failures.append(
+                self._failure(
+                    "repeated_closing_tail",
+                    "high",
+                    script_lines=script_lines,
+                    reason="el cierre vuelve a sintetizar o reabrir transiciones en vez de cerrar una sola vez",
+                    action="rewrite_closing_for_single_earned_close",
+                    line_indexes=repeated_tail_indexes,
+                    beat_ids=self._beat_ids_for_line_indexes(turns=turns, line_indexes=repeated_tail_indexes),
                 )
             )
         if int(deterministic.get("word_count", 0)) < int(min_words):
@@ -565,13 +647,28 @@ class EditorialGate:
         script_lines: List[Dict[str, Any]],
         reason: str,
         action: str,
+        line_indexes: List[int] | None = None,
+        beat_ids: List[str] | None = None,
     ) -> Dict[str, Any]:
-        line_indexes = list(range(max(0, len(script_lines) - 4), len(script_lines)))
+        resolved_line_indexes = [idx for idx in list(line_indexes or []) if 0 <= int(idx) < len(script_lines)]
+        if not resolved_line_indexes:
+            resolved_line_indexes = list(range(max(0, len(script_lines) - 4), len(script_lines)))
+        resolved_beat_ids = [str(item or "").strip() for item in list(beat_ids or []) if str(item or "").strip()]
         return {
             "failure_type": failure_type,
             "severity": severity,
-            "line_indexes": line_indexes,
-            "beat_ids": [],
+            "line_indexes": resolved_line_indexes,
+            "beat_ids": resolved_beat_ids,
             "reason": reason,
             "recommended_action": action,
         }
+
+    def _beat_ids_for_line_indexes(self, *, turns: List[Dict[str, Any]], line_indexes: List[int]) -> List[str]:
+        beat_ids: List[str] = []
+        for idx in line_indexes:
+            if idx < 0 or idx >= len(turns):
+                continue
+            beat_id = str(turns[idx].get("beat_id", "") or "").strip()
+            if beat_id and beat_id not in beat_ids:
+                beat_ids.append(beat_id)
+        return beat_ids

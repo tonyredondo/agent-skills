@@ -11,6 +11,59 @@ from typing import Any, Dict, List
 from .logging_utils import Logger
 from .podcast_artifacts import validate_episode_plan
 
+_EFFECT_MOVE_KEYWORDS = {
+    "cost": (
+        "cost",
+        "coste",
+        "caro",
+        "encarece",
+        "expensive",
+        "friccion",
+        "friction",
+        "tickets",
+        "excepc",
+        "exceptions",
+        "trust",
+        "confianza",
+    ),
+    "consequence": (
+        "consequence",
+        "consecuencia",
+        "impact",
+        "impacto",
+        "causa",
+        "causes",
+        "provoca",
+        "rompe",
+        "breaks",
+        "ticket",
+        "tickets",
+        "excepc",
+        "exceptions",
+    ),
+}
+
+_PROCEDURAL_HINTS = (
+    "=",
+    "--",
+    "./",
+    ".json",
+    ".jsonl",
+    ".zip",
+    "export ",
+    "python3 ",
+    "warn",
+    "rollback",
+    "bundle",
+    "debug",
+    "path",
+    "preset",
+    "gate",
+    "window",
+    "threshold",
+    "monitor",
+)
+
 _EPISODE_PLAN_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -89,6 +142,9 @@ class EpisodePlanner:
             - Host2 role: desafia_y_aterriza.
             - Every beat must include one required_move chosen from:
               example, objection, tradeoff, consequence, cost, awkward_question, grounding, counterexample, decision.
+            - Default to grounding, example, objection, tradeoff, and decision.
+            - Use `cost` or `consequence` only when linked evidence states that effect directly.
+            - If the evidence is mostly defaults, thresholds, paths, presets, commands, bundles, or rollback rules, prefer procedural moves over impact language.
             - Avoid roadmap openings and explicit index narration.
             - Avoid two consecutive purely explanatory beats.
             - For `short`, prefer 3-4 beats; for `standard`, 4-6 beats; for `long`, 5-7 beats.
@@ -113,6 +169,7 @@ class EpisodePlanner:
                 min_words=min_words,
                 max_words=max_words,
             )
+        payload = self._sanitize_moves(payload=payload, evidence_map=evidence_map)
         candidate = {
             "artifact_version": 1,
             "episode_id": episode_id,
@@ -130,6 +187,7 @@ class EpisodePlanner:
             min_words=min_words,
             max_words=max_words,
         )
+        self._compress_short_profile_scope(validated, profile_name=profile_name)
         self.logger.info(
             "episode_plan_built",
             episode_id=episode_id,
@@ -148,7 +206,7 @@ class EpisodePlanner:
             moves = {str(beat.get("required_move", "") or "").strip()}
             moves.update(str(item or "").strip() for item in list(beat.get("optional_moves", []) or []))
             explanatory = goal == "explain_core" and not moves.intersection(
-                {"example", "objection", "tradeoff", "cost", "awkward_question"}
+                {"example", "objection", "tradeoff", "cost", "awkward_question", "grounding", "decision", "counterexample"}
             )
             if explanatory and previous_explanatory and goal == previous_goal:
                 raise ValueError("episode_plan contains consecutive purely explanatory beats")
@@ -194,6 +252,23 @@ class EpisodePlanner:
         scale = float(target_total) / float(current_total)
         for beat in beats:
             beat["target_words"] = max(45, int(round(max(1, int(beat.get("target_words", 1))) * scale)))
+
+    def _compress_short_profile_scope(self, plan: Dict[str, Any], *, profile_name: str) -> None:
+        if str(profile_name or "").strip().lower() != "short":
+            return
+        for beat in list(plan.get("beats", []) or []):
+            if not isinstance(beat, dict):
+                continue
+            must_cover = [str(item or "").strip() for item in list(beat.get("must_cover", []) or []) if str(item or "").strip()]
+            if len(must_cover) > 3:
+                beat["must_cover"] = must_cover[:3]
+            claim_ids = [str(item or "").strip() for item in list(beat.get("claim_ids", []) or []) if str(item or "").strip()]
+            if len(claim_ids) > 8:
+                beat["claim_ids"] = claim_ids[:8]
+            topic_ids = [str(item or "").strip() for item in list(beat.get("topic_ids", []) or []) if str(item or "").strip()]
+            topic_cap = 8 if bool(beat.get("can_cut", False)) else 10
+            if len(topic_ids) > topic_cap:
+                beat["topic_ids"] = topic_ids[:topic_cap]
 
     def _fallback_plan(
         self,
@@ -280,6 +355,110 @@ class EpisodePlanner:
         payload["host_roles"] = host_roles
         payload["beats"] = beats_out
         return payload
+
+    def _sanitize_moves(self, *, payload: Dict[str, Any], evidence_map: Dict[str, Any]) -> Dict[str, Any]:
+        claims_by_id = {
+            str(item.get("claim_id", "")).strip(): dict(item)
+            for item in list(evidence_map.get("claims", []) or [])
+            if isinstance(item, dict) and str(item.get("claim_id", "")).strip()
+        }
+        topics_by_id = {
+            str(item.get("topic_id", "")).strip(): dict(item)
+            for item in list(evidence_map.get("topics", []) or [])
+            if isinstance(item, dict) and str(item.get("topic_id", "")).strip()
+        }
+        beats_out: List[Dict[str, Any]] = []
+        for beat in list(payload.get("beats", []) or []):
+            if not isinstance(beat, dict):
+                continue
+            beat_out = dict(beat)
+            if not self._beat_supports_effect_move(beat_out, claims_by_id=claims_by_id, topics_by_id=topics_by_id, move=beat_out.get("required_move")):
+                beat_out["required_move"] = self._fallback_move_for_beat(beat_out)
+            optional_moves: List[str] = []
+            for move in list(beat_out.get("optional_moves", []) or []):
+                normalized = self._normalize_move(move)
+                if not normalized:
+                    continue
+                if normalized in {"cost", "consequence"} and not self._beat_supports_effect_move(
+                    beat_out,
+                    claims_by_id=claims_by_id,
+                    topics_by_id=topics_by_id,
+                    move=normalized,
+                ):
+                    continue
+                if normalized not in optional_moves and normalized != beat_out["required_move"]:
+                    optional_moves.append(normalized)
+            if not optional_moves:
+                fallback_optional = self._fallback_optional_move_for_beat(beat_out)
+                if fallback_optional != beat_out["required_move"]:
+                    optional_moves.append(fallback_optional)
+            goal = str(beat_out.get("goal", "") or "").strip()
+            if goal == "consequence" and not self._beat_supports_effect_move(
+                beat_out,
+                claims_by_id=claims_by_id,
+                topics_by_id=topics_by_id,
+                move="consequence",
+            ):
+                beat_out["goal"] = "practical_takeaway" if bool(beat_out.get("can_cut", False)) else "explain_core"
+            beat_out["optional_moves"] = optional_moves
+            beats_out.append(beat_out)
+        payload["beats"] = beats_out
+        return payload
+
+    def _beat_supports_effect_move(
+        self,
+        beat: Dict[str, Any],
+        *,
+        claims_by_id: Dict[str, Dict[str, Any]],
+        topics_by_id: Dict[str, Dict[str, Any]],
+        move: Any,
+    ) -> bool:
+        move_name = self._normalize_move(move)
+        if move_name not in {"cost", "consequence"}:
+            return True
+        keywords = _EFFECT_MOVE_KEYWORDS[move_name]
+        for claim_id in list(beat.get("claim_ids", []) or []):
+            claim = claims_by_id.get(str(claim_id).strip())
+            if not claim:
+                continue
+            support = str(claim.get("support", "") or "").strip().lower()
+            statement = str(claim.get("statement", "") or "").strip().lower()
+            if support == "direct" and any(keyword in statement for keyword in keywords):
+                return True
+        topic_text = " ".join(
+            str(topic.get("title", "") or "").strip().lower()
+            for topic_id in list(beat.get("topic_ids", []) or [])
+            for topic in [topics_by_id.get(str(topic_id).strip())]
+            if topic
+        )
+        if topic_text and any(keyword in topic_text for keyword in keywords):
+            return True
+        return False
+
+    def _fallback_move_for_beat(self, beat: Dict[str, Any]) -> str:
+        goal = str(beat.get("goal", "") or "").strip()
+        if goal in {"concrete_example", "practical_takeaway"}:
+            return "example"
+        if goal in {"objection_and_tradeoff", "closing"}:
+            return "tradeoff"
+        if goal == "hook_and_frame":
+            return "objection"
+        return "grounding" if self._beat_is_procedural(beat) else "decision"
+
+    def _fallback_optional_move_for_beat(self, beat: Dict[str, Any]) -> str:
+        goal = str(beat.get("goal", "") or "").strip()
+        if goal in {"closing", "practical_takeaway"}:
+            return "decision"
+        if self._beat_is_procedural(beat):
+            return "grounding"
+        return "example"
+
+    def _beat_is_procedural(self, beat: Dict[str, Any]) -> bool:
+        fragments = []
+        fragments.extend(str(item or "") for item in list(beat.get("must_cover", []) or []))
+        fragments.extend(str(item or "") for item in list(beat.get("topic_ids", []) or []))
+        text = " ".join(fragments).lower()
+        return any(hint in text for hint in _PROCEDURAL_HINTS)
 
     def _normalize_opening_mode(self, value: Any) -> str:
         text = str(value or "").strip().lower()
