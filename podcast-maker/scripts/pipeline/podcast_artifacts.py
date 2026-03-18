@@ -177,6 +177,19 @@ def _optional_string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_claim_kind_support(*, kind: Any, support: Any) -> tuple[str, str]:
+    """Normalize common model field swaps between claim kind and support."""
+    normalized_kind = str(kind or "").strip()
+    normalized_support = str(support or "").strip()
+    if normalized_kind in CLAIM_SUPPORT_TYPES and normalized_support in CLAIM_KINDS:
+        return normalized_support, normalized_kind
+    if normalized_kind in CLAIM_SUPPORT_TYPES and not normalized_support:
+        return "context", normalized_kind
+    if normalized_support in CLAIM_KINDS and normalized_kind in CLAIM_KINDS:
+        return normalized_kind, "direct"
+    return normalized_kind, normalized_support
+
+
 def _identity_digest(payload: Dict[str, Any]) -> str:
     return content_hash(canonical_json(payload))
 
@@ -468,12 +481,16 @@ def validate_evidence_map(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(f"claims[{idx}] must be object")
         claim_id = _require_string(item.get("claim_id"), f"claims[{idx}].claim_id")
         statement = _require_string(item.get("statement"), f"claims[{idx}].statement")
-        kind = _require_string(item.get("kind"), f"claims[{idx}].kind")
+        kind, support = _normalize_claim_kind_support(
+            kind=item.get("kind"),
+            support=item.get("support"),
+        )
+        kind = _require_string(kind, f"claims[{idx}].kind")
         if kind not in CLAIM_KINDS:
             raise ValueError(f"claims[{idx}].kind invalid: {kind}")
         topic_ids = _normalize_string_list(item.get("topic_ids", []), f"claims[{idx}].topic_ids")
         source_refs = _normalize_string_list(item.get("source_refs", []), f"claims[{idx}].source_refs")
-        support = _require_string(item.get("support"), f"claims[{idx}].support")
+        support = _require_string(support, f"claims[{idx}].support")
         if support not in CLAIM_SUPPORT_TYPES:
             raise ValueError(f"claims[{idx}].support invalid: {support}")
         confidence = _require_float(item.get("confidence"), f"claims[{idx}].confidence")

@@ -108,6 +108,21 @@ _EFFECT_LANGUAGE_MARKERS = (
 )
 
 
+def _normalize_claim_kind_support(kind: Any, support: Any) -> Tuple[str, str]:
+    """Normalize common field swaps between claim kind and support."""
+    normalized_kind = str(kind or "").strip()
+    normalized_support = str(support or "").strip()
+    valid_kinds = {"fact", "example", "tension", "context", "counterpoint", "quote"}
+    valid_support = {"direct", "inferred_light"}
+    if normalized_kind in valid_support and normalized_support in valid_kinds:
+        return normalized_support, normalized_kind
+    if normalized_kind in valid_support and not normalized_support:
+        return "context", normalized_kind
+    if normalized_support in valid_kinds and normalized_kind in valid_kinds:
+        return normalized_kind, "direct"
+    return normalized_kind, normalized_support
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -259,9 +274,11 @@ class EvidenceMapBuilder:
             if not isinstance(item, dict):
                 continue
             statement = str(item.get("statement", "") or "").strip()
-            kind = str(item.get("kind", "") or "").strip()
+            kind, support = _normalize_claim_kind_support(
+                item.get("kind", ""),
+                item.get("support", ""),
+            )
             topic_hint = str(item.get("topic_hint", "") or "").strip()
-            support = str(item.get("support", "") or "").strip()
             if not statement or not kind or not topic_hint or not support:
                 continue
             try:
@@ -382,7 +399,12 @@ class EvidenceMapBuilder:
                     },
                 )
                 claim_id = f"claim_{len(claims) + 1:03d}"
-                kind = str(item.get("kind", "") or "").strip() or "context"
+                kind, support = _normalize_claim_kind_support(
+                    item.get("kind", ""),
+                    item.get("support", ""),
+                )
+                kind = kind or "context"
+                support = support or "direct"
                 confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
                 claim_payload = {
                     "claim_id": claim_id,
@@ -390,7 +412,7 @@ class EvidenceMapBuilder:
                     "kind": kind,
                     "topic_ids": [topic_id],
                     "source_refs": [source_ref],
-                    "support": str(item.get("support", "") or "").strip() or "direct",
+                    "support": support,
                     "confidence": confidence,
                 }
                 claims.append(claim_payload)

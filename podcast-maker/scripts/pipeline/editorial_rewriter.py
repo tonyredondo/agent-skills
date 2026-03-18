@@ -82,6 +82,7 @@ class EditorialRewriter:
             - If support tooling or a debug bundle appears near the end, bridge it explicitly from rollout / rollback / health-window logic instead of opening a fresh topic.
             - Let the debug-bundle example be the last operational proof, then make the final line return to the thesis rather than staying inside support detail.
             - In every beat, Host2 must contribute friction or a decision, not just ask for the next batch of facts.
+            - In the closing beat, rewrite Host2 so it draws a contrast, triage order, escalation trigger, or operator decision; a plain exposition line is not enough.
             - Keep spoken text in Spanish.
             - Keep instructions in short actionable English.
             - Preserve the same topic order unless the editorial report explicitly flags a transition problem.

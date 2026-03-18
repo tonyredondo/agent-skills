@@ -94,6 +94,17 @@ class ChaosLockingTests(unittest.TestCase):
             store.acquire_lock(force_unlock=True)
             store.release_lock()
 
+    def test_script_lock_with_dead_pid_is_reclaimed_without_force_unlock(self) -> None:
+        reliability = ReliabilityConfig.from_env()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScriptCheckpointStore(base_dir=tmp, episode_id="dead_pid_script", reliability=reliability)
+            os.makedirs(os.path.dirname(store.lock_path), exist_ok=True)
+            with open(store.lock_path, "w", encoding="utf-8") as f:
+                f.write('{"pid": 999999, "ts": 9999999999, "token": "dead"}')
+            store.acquire_lock()
+            self.assertTrue(os.path.exists(store.lock_path))
+            store.release_lock()
+
     def test_script_lock_is_atomic_under_race(self) -> None:
         reliability = ReliabilityConfig.from_env()
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,6 +200,17 @@ class ChaosLockingTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 store.acquire_lock()
             store.acquire_lock(force_unlock=True)
+            store.release_lock()
+
+    def test_audio_lock_with_dead_pid_is_reclaimed_without_force_unlock(self) -> None:
+        reliability = ReliabilityConfig.from_env()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AudioCheckpointStore(base_dir=tmp, episode_id="dead_pid_audio", reliability=reliability)
+            os.makedirs(os.path.dirname(store.lock_path), exist_ok=True)
+            with open(store.lock_path, "w", encoding="utf-8") as f:
+                f.write('{"pid": 999999, "ts": 9999999999, "token": "dead"}')
+            store.acquire_lock()
+            self.assertTrue(os.path.exists(store.lock_path))
             store.release_lock()
 
 

@@ -55,6 +55,25 @@ def _atomic_create_json(path: str, payload: Dict[str, Any]) -> None:
         f.write("\n")
 
 
+def _pid_is_alive(pid: Any) -> bool:
+    """Best-effort liveness check used to reclaim orphaned locks."""
+    try:
+        parsed = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if parsed <= 0:
+        return False
+    try:
+        os.kill(parsed, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
 @dataclass
 class ScriptCheckpointStore:
     """Owns script checkpoint files, lock lifecycle, and resume checks."""
@@ -187,7 +206,9 @@ class ScriptCheckpointStore:
                 except OSError:
                     lock_mtime = ts
                 age = now - max(ts, lock_mtime)
-                if force_unlock or age > self.reliability.lock_ttl_seconds:
+                owner_pid = lock_data.get("pid")
+                owner_alive = _pid_is_alive(owner_pid)
+                if force_unlock or not owner_alive or age > self.reliability.lock_ttl_seconds:
                     # Reclaim stale lock and retry atomically.
                     try:
                         os.remove(self.lock_path)
@@ -195,7 +216,7 @@ class ScriptCheckpointStore:
                         # Another process may have removed/replaced it; retry atomically.
                         pass
                     continue
-                owner = lock_data.get("pid", "unknown")
+                owner = owner_pid if owner_pid is not None else "unknown"
                 raise LockError(f"Checkpoint lock active (pid={owner}, age={age}s)")
 
     def release_lock(self) -> None:

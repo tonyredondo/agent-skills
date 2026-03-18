@@ -46,6 +46,25 @@ def _parse_version(value: Any) -> Tuple[int, int]:
     return -1, -1
 
 
+def _pid_is_alive(pid: Any) -> bool:
+    """Best-effort liveness check used to reclaim orphaned audio locks."""
+    try:
+        parsed = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if parsed <= 0:
+        return False
+    try:
+        os.kill(parsed, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
 @dataclass
 class AudioCheckpointStore:
     """Owns audio manifest files, lock lifecycle, and resume checks."""
@@ -181,14 +200,16 @@ class AudioCheckpointStore:
                 except OSError:
                     lock_mtime = ts
                 age = now - max(ts, lock_mtime)
-                if force_unlock or age > self.reliability.lock_ttl_seconds:
+                owner_pid = lock_data.get("pid")
+                owner_alive = _pid_is_alive(owner_pid)
+                if force_unlock or not owner_alive or age > self.reliability.lock_ttl_seconds:
                     # Reclaim stale lock and retry atomic creation.
                     try:
                         os.remove(self.lock_path)
                     except OSError:
                         pass
                     continue
-                owner = lock_data.get("pid", "unknown")
+                owner = owner_pid if owner_pid is not None else "unknown"
                 raise RuntimeError(f"Audio checkpoint lock active (pid={owner}, age={age}s)")
 
     def release_lock(self) -> None:

@@ -252,6 +252,39 @@ class EditorialGateTests(unittest.TestCase):
         self.assertNotIn("host2_not_pushing", failure_types)
         self.assertGreaterEqual(report["deterministic_metrics"]["host2_push_ratio"], 0.66)
 
+    def test_evaluate_counts_operational_contrast_closing_language_as_host2_push(self) -> None:
+        lines = [
+            _line("Ana", "Host1", "Primero validas si el run sigue vivo o si solo repite pasos sin crecer."),
+            _line("Luis", "Host2", "Se ve rapido en una senal: una cosa es avanzar lento y otra seguir empujando una puerta cerrada."),
+            _line("Ana", "Host1", "Luego toca leer manifests y reportes sin mezclar calidad con audio."),
+            _line("Luis", "Host2", "La secuencia correcta te deja separar si el bloqueo es de guion, de audio o de rollout antes de tocar nada."),
+            _line("Ana", "Host1", "Y al cerrar el episodio, lo importante es decidir si observas, escalas o reviertes."),
+            _line("Luis", "Host2", "Cuando ya no quieres solo observar, la diferencia practica es entrar en enforced canary y no decidir por intuicion."),
+        ]
+        artifact = build_script_artifact(
+            stage="final",
+            episode_id="episode_test",
+            run_token="run_test",
+            source_digest="src_digest",
+            plan_ref="episode_plan.json",
+            plan_digest="plan_digest",
+            lines=lines,
+            episode_plan=self.plan,
+            target_word_count=120,
+        )
+        report = EditorialGate(client=None, logger=self.logger).evaluate(
+            script_artifact=artifact,
+            script_lines=list(artifact.get("lines", [])),
+            episode_plan=self.plan,
+            evidence_map={},
+            profile_name="short",
+            min_words=40,
+            max_words=180,
+        )
+        failure_types = {item["failure_type"] for item in report["failures"]}
+        self.assertNotIn("host2_not_pushing", failure_types)
+        self.assertGreaterEqual(report["deterministic_metrics"]["host2_push_ratio"], 0.66)
+
 
 if __name__ == "__main__":
     unittest.main()

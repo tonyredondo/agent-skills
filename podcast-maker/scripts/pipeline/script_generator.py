@@ -2333,6 +2333,15 @@ class ScriptGenerator:
         validation_reason = ""
         validation_blocked = False
         blocked_message = ""
+        suggested_target_minutes = max(
+            1.0,
+            float(source_word_count) / float(max(80.0, self.config.words_per_min) * max(0.05, self.config.source_validation_enforce_ratio)),
+        )
+        suggested_profile = "short"
+        if suggested_target_minutes >= 25.0:
+            suggested_profile = "long"
+        elif suggested_target_minutes >= 10.0:
+            suggested_profile = "standard"
 
         if self.config.target_minutes < 2.0 or self.config.target_minutes > 60.0:
             self.logger.warn(
@@ -2359,7 +2368,8 @@ class ScriptGenerator:
                     blocked_message = (
                         "Source is too short for the requested target length. "
                         f"Provide at least ~{required_min_words} words "
-                        f"(recommended ~{recommended_min_words})."
+                        f"(recommended ~{recommended_min_words}). "
+                        f"Suggested fallback: profile `{suggested_profile}` or target_minutes <= {round(suggested_target_minutes, 1)}."
                     )
             elif source_to_target_ratio < self.config.source_validation_warn_ratio:
                 validation_status = "warn"
@@ -3129,10 +3139,19 @@ class ScriptGenerator:
             write_json_artifact(path=artifact_paths["structural_report"], payload=structural_report)
             phase_seconds["postprocess"] = round(time.time() - phase_started, 3)
             if not bool(structural_report.get("pass", False)):
-                raise ScriptOperationError(
-                    "Script failed structural validation",
-                    error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
+                repaired_final_lines = repair_script_completeness(
+                    final_lines,
+                    max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
                 )
+                repaired_structural_report = structural_gate.evaluate(lines=repaired_final_lines)
+                if not bool(repaired_structural_report.get("pass", False)):
+                    raise ScriptOperationError(
+                        "Script failed structural validation",
+                        error_kind=ERROR_KIND_SCRIPT_COMPLETENESS,
+                    )
+                final_lines = structural_gate.finalize(lines=repaired_final_lines)
+                structural_report = repaired_structural_report
+                write_json_artifact(path=artifact_paths["structural_report"], payload=structural_report)
             final_artifact = build_script_artifact(
                 stage="final",
                 episode_id=resolved_episode_id,
@@ -3256,6 +3275,146 @@ class ScriptGenerator:
             write_json_artifact(path=artifact_paths["editorial_report"], payload=quality_editorial_report)
             phase_seconds["editorial_gate"] += round(time.time() - phase_started, 3)
             self._mark_phase_state(state=state, store=store, phase_name="editorial_gate", status="completed")
+            if not bool(quality_editorial_report.get("pass", False)):
+                stabilization_lines = list(final_lines)
+                closing_beat_id = ""
+                failure_types = {
+                    str(item.get("failure_type", "")).strip()
+                    for item in list(quality_editorial_report.get("failures", []) or [])
+                    if isinstance(item, dict)
+                }
+                if "repeated_closing_tail" in failure_types:
+                    closing_beat_id = str(
+                        quality_editorial_report.get("deterministic_metrics", {}).get("closing_beat_id")
+                        or (
+                            list(episode_plan.get("beats", []) or [])[-1].get("beat_id")
+                            if list(episode_plan.get("beats", []) or [])
+                            else ""
+                        )
+                    ).strip()
+                    trimmed_lines: List[Dict[str, Any]] = []
+                    closing_seen = 0
+                    for turn in list(final_artifact.get("turns", []) or []):
+                        if not isinstance(turn, dict):
+                            continue
+                        beat_id = str(turn.get("beat_id", "")).strip()
+                        if closing_beat_id and beat_id == closing_beat_id:
+                            closing_seen += 1
+                            if closing_seen > 2:
+                                continue
+                        payload = {
+                            "speaker": str(turn.get("speaker", "")).strip(),
+                            "role": str(turn.get("role", "")).strip(),
+                            "instructions": str(turn.get("instructions", "")).strip(),
+                            "text": str(turn.get("text", "")).strip(),
+                        }
+                        pace_hint = str(turn.get("pace_hint", "") or "").strip()
+                        if pace_hint:
+                            payload["pace_hint"] = pace_hint
+                        trimmed_lines.append(payload)
+                    if trimmed_lines:
+                        stabilization_lines = trimmed_lines
+                stabilized_artifact = build_script_artifact(
+                    stage="final",
+                    episode_id=resolved_episode_id,
+                    run_token=effective_run_token,
+                    source_digest=source_digest,
+                    plan_ref=str(final_artifact.get("plan_ref")),
+                    plan_digest=plan_digest,
+                    lines=repair_script_completeness(
+                        stabilization_lines,
+                        max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
+                    ),
+                    episode_plan=episode_plan,
+                    prior_artifact=final_artifact,
+                    target_word_count=final_artifact.get("target_word_count"),
+                )
+                if count_words_from_lines(list(stabilized_artifact.get("lines", []))) < int(min_words):
+                    target_beat_id = self._select_underlength_expansion_beat(
+                        script_artifact=stabilized_artifact,
+                        episode_plan=episode_plan,
+                    )
+                    if closing_beat_id and target_beat_id == closing_beat_id:
+                        for beat in list(episode_plan.get("beats", []) or []):
+                            candidate_beat_id = str(dict(beat).get("beat_id", "")).strip()
+                            if candidate_beat_id and candidate_beat_id != closing_beat_id:
+                                target_beat_id = candidate_beat_id
+                                break
+                    expansion_lines = self._request_contextual_beat_expansion_lines(
+                        script_artifact=stabilized_artifact,
+                        episode_plan=episode_plan,
+                        min_words=min_words,
+                        max_words=max_words,
+                        source_context=source_for_generation,
+                        target_beat_id=target_beat_id,
+                        continuation_stage="final_underlength",
+                    )
+                    if expansion_lines:
+                        stabilized_artifact = self._insert_lines_into_beat(
+                            script_artifact=stabilized_artifact,
+                            episode_plan=episode_plan,
+                            beat_id=target_beat_id,
+                            new_lines=expansion_lines,
+                        )
+                stabilized_lines = structural_gate.finalize(lines=list(stabilized_artifact.get("lines", [])))
+                stabilized_structural_report = structural_gate.evaluate(lines=stabilized_lines)
+                if bool(stabilized_structural_report.get("pass", False)):
+                    stabilized_artifact = build_script_artifact(
+                        stage="final",
+                        episode_id=resolved_episode_id,
+                        run_token=effective_run_token,
+                        source_digest=source_digest,
+                        plan_ref=str(stabilized_artifact.get("plan_ref")),
+                        plan_digest=plan_digest,
+                        lines=stabilized_lines,
+                        episode_plan=episode_plan,
+                        prior_artifact=stabilized_artifact,
+                        target_word_count=stabilized_artifact.get("target_word_count"),
+                    )
+                    stabilized_fact_guard_report = fact_guard.validate(
+                        script_artifact=stabilized_artifact,
+                        evidence_map=evidence_map,
+                        episode_plan=episode_plan,
+                        stage_name="final",
+                    )
+                    stabilized_editorial_report = EditorialGate(client=self.client, logger=self.logger).evaluate(
+                        script_artifact=stabilized_artifact,
+                        script_lines=list(stabilized_artifact.get("lines", [])),
+                        episode_plan=episode_plan,
+                        evidence_map=evidence_map,
+                        profile_name=self.config.profile_name,
+                        min_words=min_words,
+                        max_words=max_words,
+                        round_used=round_used,
+                        max_rounds=max_rewrite_rounds,
+                    )
+                    stabilized_editorial_report.update(
+                        {
+                            "run_token": effective_run_token,
+                            "source_digest": source_digest,
+                            "plan_digest": plan_digest,
+                            "internal_artifact_digest": stabilized_artifact.get("internal_artifact_digest", ""),
+                            "public_payload_digest": stabilized_artifact.get("public_payload_digest", ""),
+                        }
+                    )
+                    if bool(stabilized_editorial_report.get("pass", False)) and not self._fact_guard_blocks(
+                        stabilized_fact_guard_report
+                    ):
+                        final_artifact = stabilized_artifact
+                        final_lines = stabilized_lines
+                        structural_report = stabilized_structural_report
+                        fact_guard_final_report = stabilized_fact_guard_report
+                        quality_editorial_report = stabilized_editorial_report
+                        write_json_artifact(
+                            path=artifact_paths["final_evaluated_post_fact_repair"],
+                            payload=final_artifact,
+                        )
+                        write_json_artifact(path=artifact_paths["structural_report"], payload=structural_report)
+                        write_json_artifact(
+                            path=artifact_paths["fact_guard_report_final"],
+                            payload=fact_guard_final_report,
+                        )
+                        write_json_artifact(path=artifact_paths["editorial_report"], payload=quality_editorial_report)
             public_payload = build_public_script_payload(artifact=final_artifact)
             write_script_payload(path=output_path, lines=final_lines)
             quality_report = self._build_quality_report_payload(

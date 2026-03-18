@@ -74,6 +74,7 @@ class DialogueDrafter:
             - State the core thesis once, then advance by example, consequence, objection, tradeoff, or incident.
             - If the source only gives a rule, threshold, default, path, or preset, describe what it does or when it is used; do not upgrade it into downstream impact.
             - Host2 must do more than request another list: force a tradeoff, objection, concrete implication, or operational decision in every beat.
+            - In the closing beat, Host2 must force a distinction, escalation rule, or operator choice; exposition alone is not enough.
             - Avoid recap/farewell templates as mandatory ending form.
             - Earn only one close in the final beat; do not append a second recap after the close lands.
             - In the last 4-6 turns, every turn must add a new move: example, objection, cost, consequence, grounding, or decision.

@@ -94,6 +94,67 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return normalized in {"1", "true", "yes", "on"}
 
 
+def _source_validation_snapshot(*, script_cfg: ScriptConfig, source_text: str) -> dict[str, object]:
+    """Estimate whether source length would block this config before generation."""
+    source_word_count = len(str(source_text or "").split())
+    target_word_count = max(int(script_cfg.min_words), int((int(script_cfg.min_words) + int(script_cfg.max_words)) / 2))
+    ratio = float(source_word_count) / float(max(1, target_word_count))
+    blocked = bool(
+        script_cfg.source_validation_mode == "enforce"
+        and ratio < float(script_cfg.source_validation_enforce_ratio)
+    )
+    return {
+        "source_word_count": source_word_count,
+        "target_word_count": target_word_count,
+        "ratio": round(ratio, 4),
+        "blocked": blocked,
+    }
+
+
+def _maybe_autodowngrade_source_profile(
+    *,
+    args: argparse.Namespace,
+    source_text: str,
+    script_cfg: ScriptConfig,
+    logger: Logger,
+) -> ScriptConfig:
+    """Downgrade to a shorter default profile when source length blocks the run."""
+    if not script_cfg.adaptive_defaults_enabled:
+        return script_cfg
+    if args.target_minutes is not None or args.min_words is not None or args.max_words is not None:
+        return script_cfg
+    profile_order = ["short", "standard", "long"]
+    current_profile = str(script_cfg.profile_name or "standard").strip().lower()
+    if current_profile not in profile_order:
+        return script_cfg
+    current_snapshot = _source_validation_snapshot(script_cfg=script_cfg, source_text=source_text)
+    if not bool(current_snapshot.get("blocked", False)):
+        return script_cfg
+    current_rank = profile_order.index(current_profile)
+    for candidate_name in reversed(profile_order[:current_rank]):
+        candidate_cfg = ScriptConfig.from_env(
+            target_minutes=None,
+            words_per_min=args.words_per_min,
+            min_words=None,
+            max_words=None,
+            profile_name=candidate_name,
+        )
+        candidate_snapshot = _source_validation_snapshot(script_cfg=candidate_cfg, source_text=source_text)
+        if bool(candidate_snapshot.get("blocked", False)):
+            continue
+        logger.warn(
+            "source_profile_autodowngraded",
+            requested_profile=current_profile,
+            effective_profile=candidate_name,
+            source_word_count=current_snapshot.get("source_word_count"),
+            requested_target_word_count=current_snapshot.get("target_word_count"),
+            effective_target_word_count=candidate_snapshot.get("target_word_count"),
+            source_to_target_ratio=current_snapshot.get("ratio"),
+        )
+        return candidate_cfg
+    return script_cfg
+
+
 def _episode_id_arg(value: str) -> str:
     """Validate `--episode-id` as a plain token (no path parts)."""
     name = str(value or "").strip()
@@ -557,6 +618,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not source_text:
             raise RuntimeError("Input source unavailable")
+        script_cfg = _maybe_autodowngrade_source_profile(
+            args=args,
+            source_text=source_text,
+            script_cfg=script_cfg,
+            logger=logger,
+        )
+        audio_cfg = AudioConfig.from_env(profile_name=script_cfg.profile_name)
         # Pre-flight housekeeping protects disk usage and keeps checkpoint dirs
         # bounded before new artifacts are produced.
         ensure_min_free_disk(".", reliability.min_free_disk_mb)
