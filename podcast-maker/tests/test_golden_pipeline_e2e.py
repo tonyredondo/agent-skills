@@ -29,6 +29,20 @@ class _FakeScriptClient:
     def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
         self.requests_made += 1
         self._seq += 1
+        if stage.startswith("fact_guard_"):
+            return {"pass": True, "issues": []}
+        if stage == "editorial_gate_eval":
+            return {
+                "scores": {
+                    "orality": 4.0,
+                    "host_distinction": 4.0,
+                    "progression": 4.0,
+                    "freshness": 4.0,
+                    "listener_engagement": 4.0,
+                    "density_control": 4.0,
+                },
+                "reasons": [],
+            }
         return {
             "lines": [
                 {

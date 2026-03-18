@@ -51,7 +51,7 @@ _QUESTION_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 _HOST2_PUSH_RE = re.compile(
-    r"(?:pero|vale,? bajemos|en la practica|por ejemplo|cuanto cuesta|que coste|que costo|que tradeoff|que riesgo|que ejemplo|aterriza|concreto|humo|exacto|claro,? porque|entonces|si falta|la barra|el orden es)",
+    r"(?:pero|vale,? bajemos|en la practica|por ejemplo|cuanto cuesta|que coste|que costo|que tradeoff|que riesgo|que ejemplo|aterriza|concreto|humo|exacto|claro,? porque|entonces|si falta|la barra|el orden es|autoenga[nñ]o|no me dice|no me voy|por eso|lo que cambia|ese orden importa|no miras solo|no alcanza|eso obliga|si mezclas|ese marco|si fallan|no es lo mismo|dame el orden|si sospecho|no hay misterio|conviene usar|antes de compartir|tesis completa)",
     re.IGNORECASE,
 )
 _THESIS_REPEAT_RE = re.compile(r"(?:en el fondo|la idea central|la tesis|esto va de|lo importante es)", re.IGNORECASE)

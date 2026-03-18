@@ -149,6 +149,7 @@ SUMMARY_LABEL_RE = re.compile(
 QUESTION_PUNCT_RE = re.compile(r"[¿?]")
 TRANSITION_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
 CLAUSE_SPLIT_RE = re.compile(r"[.!?;:]+")
+DENSE_TURN_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;:])\s+")
 SPANISH_LEADING_FILLER_RE = re.compile(
     r"^\s*(?:(?:y|adem[aá]s|tambi[eé]n|entonces|pues|bueno|vale|o\s+sea|de\s+hecho|exacto|tal\s+cual|claro|totalmente|de\s+acuerdo|correcto|cierto)\b[\s,:;\-]*)+",
     re.IGNORECASE,
@@ -805,6 +806,48 @@ def dedupe_append(base_lines: List[Dict[str, str]], new_lines: List[Dict[str, st
     return out, added
 
 
+def split_dense_multi_sentence_turns(
+    lines: List[Dict[str, str]],
+    *,
+    min_words: int = 38,
+    max_chunk_words: int = 32,
+) -> List[Dict[str, str]]:
+    """Split dense multi-sentence turns into shorter spoken chunks."""
+    out: List[Dict[str, str]] = []
+    for line in lines:
+        current = dict(line)
+        text = str(current.get("text") or "").strip()
+        if len(text.split()) < max(1, int(min_words)):
+            out.append(current)
+            continue
+        sentences = [part.strip() for part in DENSE_TURN_SENTENCE_SPLIT_RE.split(text) if part.strip()]
+        if len(sentences) < 2:
+            out.append(current)
+            continue
+        chunks: List[str] = []
+        pending: List[str] = []
+        pending_words = 0
+        for sentence in sentences:
+            sentence_words = len(sentence.split())
+            if pending and pending_words + sentence_words > max(1, int(max_chunk_words)):
+                chunks.append(" ".join(pending).strip())
+                pending = [sentence]
+                pending_words = sentence_words
+            else:
+                pending.append(sentence)
+                pending_words += sentence_words
+        if pending:
+            chunks.append(" ".join(pending).strip())
+        if len(chunks) < 2 or any(len(chunk.split()) < 5 for chunk in chunks):
+            out.append(current)
+            continue
+        for chunk in chunks:
+            updated = dict(current)
+            updated["text"] = chunk
+            out.append(updated)
+    return out
+
+
 def _is_question_like(text: str) -> bool:
     """Detect whether text has direct question punctuation."""
     raw = str(text or "").strip()
@@ -1297,8 +1340,9 @@ def repair_script_completeness(
     max_consecutive_same_speaker: int = 2,
 ) -> List[Dict[str, str]]:
     """Run deterministic repair chain for completeness issues."""
+    split_turns = split_dense_multi_sentence_turns(lines)
     normalized_turns = normalize_speaker_turns(
-        lines,
+        split_turns,
         max_consecutive_same_speaker=max_consecutive_same_speaker,
     )
     normalized = normalize_block_numbering(normalized_turns)
@@ -1320,8 +1364,9 @@ def harden_script_structure(
     max_consecutive_same_speaker: int = 2,
 ) -> List[Dict[str, str]]:
     """Run structural hardening chain shared across pipeline stages."""
+    split_turns = split_dense_multi_sentence_turns(lines)
     normalized_turns = normalize_speaker_turns(
-        lines,
+        split_turns,
         max_consecutive_same_speaker=max_consecutive_same_speaker,
     )
     normalized = normalize_block_numbering(normalized_turns)

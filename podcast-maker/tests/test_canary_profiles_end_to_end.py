@@ -27,39 +27,162 @@ class _FakeScriptClient:
         self.estimated_cost_usd = 0.0
         self.script_retries_total = 0
         self.script_json_parse_failures = 0
-        self._seq = 0
+
+    def _base_lines(self):  # noqa: ANN202
+        return [
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Warm, clear, conversational tone. Keep pacing measured.",
+                "pace_hint": "steady",
+                "text": "Automatizar ayuda cuando quita pasos repetitivos, pero falla si esconde el criterio con el que operas.",
+            },
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "Curious, grounded tone. Ask for concrete examples.",
+                "pace_hint": "steady",
+                "text": "Vale, pero si una regla salta por un caso raro, el equipo necesita saber por que y que hacer.",
+            },
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Warm, clear, conversational tone. Keep pacing measured.",
+                "pace_hint": "steady",
+                "text": "La ganancia buena es quitar trabajo obvio y dejar visibles las excepciones que piden juicio humano.",
+            },
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "Curious, grounded tone. Ask for concrete examples.",
+                "pace_hint": "brisk",
+                "text": "Ahi aparece el coste oculto: menos tarea arriba, mas dudas y vueltas si el borde queda tapado.",
+            },
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Warm, clear, conversational tone. Keep pacing measured.",
+                "pace_hint": "steady",
+                "text": "Por eso conviene automatizar lo repetitivo y marcar donde una persona debe decidir con contexto.",
+            },
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "Curious, grounded tone. Ask for concrete examples.",
+                "pace_hint": "calm",
+                "text": "Claro, porque cuando el limite esta visible, la herramienta vuelve a ser una ayuda fiable.",
+            },
+        ]
+
+    def _underlength_lines(self):  # noqa: ANN202
+        return [
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "Curious, grounded tone. Ask for concrete examples.",
+                "pace_hint": "steady",
+                "text": "Dame un ejemplo concreto: una aprobacion rutinaria puede ir sola, pero un dato inconsistente necesita pausa, revision y un motivo legible para el operador.",
+            },
+            {
+                "speaker": "Ana",
+                "role": "Host1",
+                "instructions": "Warm, clear, conversational tone. Keep pacing measured.",
+                "pace_hint": "steady",
+                "text": "En la practica, lo util es separar bien el tramo estable del caso raro para ganar velocidad sin perder criterio cuando cambia el contexto.",
+            },
+        ]
 
     def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
         self.requests_made += 1
-        self._seq += 1
-        return {
-            "lines": [
-                {
-                    "speaker": "Carlos",
-                    "role": "Host1",
-                    "instructions": (
-                        "Voice Affect: Warm and confident | Tone: Conversational | "
-                        "Pacing: Brisk | Emotion: Curiosity | Pronunciation: Clear | Pauses: Brief"
-                    ),
-                    "text": (
-                        f"Bloque {self._seq} con contexto operativo, decisiones practicas y ejemplos claros "
-                        "para que la audiencia pueda aplicar mejoras de forma inmediata."
-                    ),
+        if stage.startswith("evidence_map_segment_"):
+            return {
+                "segment_summary": "El material explica que automatizar bien reduce trabajo repetitivo sin ocultar el criterio operativo.",
+                "claims": [
+                    {
+                        "statement": "Automatizar tareas repetitivas ahorra tiempo operativo.",
+                        "kind": "fact",
+                        "topic_hint": "automatizacion util",
+                        "support": "direct",
+                        "confidence": 0.93,
+                    },
+                    {
+                        "statement": "Cuando una regla oculta su criterio aparecen mas dudas y friccion en los casos raros.",
+                        "kind": "tension",
+                        "topic_hint": "coste oculto",
+                        "support": "direct",
+                        "confidence": 0.9,
+                    },
+                ],
+            }
+        if stage == "evidence_map_global_thesis":
+            return {
+                "global_thesis": "La automatizacion util recorta trabajo repetitivo sin esconder el criterio que el equipo necesita para resolver excepciones."
+            }
+        if stage == "episode_planner":
+            return {
+                "opening_mode": "concrete_tension",
+                "closing_mode": "earned_synthesis",
+                "host_roles": {
+                    "Host1": "sintetiza_y_ordena",
+                    "Host2": "desafia_y_aterriza",
                 },
-                {
-                    "speaker": "Lucia",
-                    "role": "Host2",
-                    "instructions": (
-                        "Voice Affect: Bright and friendly | Tone: Conversational | "
-                        "Pacing: Measured | Emotion: Enthusiasm | Pronunciation: Clear | Pauses: Brief"
-                    ),
-                    "text": (
-                        f"Seguimos en Bloque {self._seq} con riesgos, tradeoffs y recomendaciones accionables "
-                        "manteniendo una narrativa coherente de inicio a cierre."
-                    ),
+                "beats": [
+                    {
+                        "beat_id": "beat_01",
+                        "goal": "hook_and_frame",
+                        "topic_ids": ["automatizacion_util"],
+                        "claim_ids": ["claim_001"],
+                        "required_move": "objection",
+                        "optional_moves": ["grounding"],
+                        "must_cover": ["claim_001"],
+                        "can_cut": False,
+                        "target_words": 34,
+                    },
+                    {
+                        "beat_id": "beat_02",
+                        "goal": "concrete_example",
+                        "topic_ids": ["coste_oculto"],
+                        "claim_ids": ["claim_002"],
+                        "required_move": "example",
+                        "optional_moves": ["tradeoff"],
+                        "must_cover": ["claim_002"],
+                        "can_cut": True,
+                        "target_words": 58,
+                    },
+                    {
+                        "beat_id": "beat_03",
+                        "goal": "closing",
+                        "topic_ids": ["coste_oculto"],
+                        "claim_ids": ["claim_002"],
+                        "required_move": "decision",
+                        "optional_moves": ["consequence"],
+                        "must_cover": ["claim_002"],
+                        "can_cut": False,
+                        "target_words": 28,
+                    },
+                ],
+            }
+        if stage == "dialogue_drafter":
+            return {"lines": self._base_lines()}
+        if stage.startswith("fact_guard_"):
+            return {"pass": True, "issues": []}
+        if stage == "editorial_gate_eval":
+            return {
+                "scores": {
+                    "orality": 4.0,
+                    "host_distinction": 4.0,
+                    "progression": 4.0,
+                    "freshness": 4.0,
+                    "listener_engagement": 4.0,
+                    "density_control": 4.0,
                 },
-            ]
-        }
+                "reasons": [],
+            }
+        if stage.startswith("editorial_rewriter_"):
+            return {"lines": self._base_lines()}
+        if stage.startswith("editorial_underlength_"):
+            return {"lines": self._underlength_lines()}
+        raise AssertionError(f"unexpected stage: {stage}")
 
     def generate_freeform_text(self, *, prompt, max_output_tokens, stage):  # noqa: ANN001
         self.requests_made += 1

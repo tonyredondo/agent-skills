@@ -27,6 +27,20 @@ class _InterruptScriptClient:
 
     def generate_script_json(self, *, prompt, schema, max_output_tokens, stage):  # noqa: ANN001
         self.requests_made += 1
+        if stage.startswith("fact_guard_"):
+            return {"pass": True, "issues": []}
+        if stage == "editorial_gate_eval":
+            return {
+                "scores": {
+                    "orality": 4.0,
+                    "host_distinction": 4.0,
+                    "progression": 4.0,
+                    "freshness": 4.0,
+                    "listener_engagement": 4.0,
+                    "density_control": 4.0,
+                },
+                "reasons": [],
+            }
         return {
             "lines": [
                 {
@@ -91,7 +105,13 @@ class InterruptionTests(unittest.TestCase):
     def test_script_generator_interrupts_before_first_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, min_words=80, max_words=120)
-            cfg = dataclasses.replace(cfg, checkpoint_dir=os.path.join(tmp, "ckpt"))
+            cfg = dataclasses.replace(
+                cfg,
+                checkpoint_dir=os.path.join(tmp, "ckpt"),
+                pre_summary_trigger_words=150,
+                pre_summary_target_words=200,
+                pre_summary_max_rounds=2,
+            )
             gen = ScriptGenerator(
                 config=cfg,
                 reliability=ReliabilityConfig.from_env(),
@@ -111,10 +131,17 @@ class InterruptionTests(unittest.TestCase):
                 state = json.load(f)
             self.assertEqual(state.get("status"), "interrupted")
 
-    def test_script_generator_interrupts_during_continuation(self) -> None:
+    def test_script_generator_interrupts_during_pre_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = ScriptConfig.from_env(profile_name="short", target_minutes=5, min_words=200, max_words=240)
-            cfg = dataclasses.replace(cfg, checkpoint_dir=os.path.join(tmp, "ckpt"), no_progress_rounds=10)
+            cfg = dataclasses.replace(
+                cfg,
+                checkpoint_dir=os.path.join(tmp, "ckpt"),
+                no_progress_rounds=10,
+                pre_summary_trigger_words=150,
+                pre_summary_target_words=200,
+                pre_summary_max_rounds=2,
+            )
             client = _InterruptScriptClient()
             gen = ScriptGenerator(
                 config=cfg,
@@ -131,11 +158,11 @@ class InterruptionTests(unittest.TestCase):
 
             with self.assertRaises(InterruptedError):
                 gen.generate(
-                    source_text=("tema " * 200).strip(),
+                    source_text=("tema " * 800).strip(),
                     output_path=out_path,
                     cancel_check=cancel_check,
                 )
-            self.assertGreaterEqual(client.requests_made, 1)
+            self.assertGreaterEqual(calls["n"], 2)
 
     def test_tts_synthesizer_interrupts_before_chunk_processing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

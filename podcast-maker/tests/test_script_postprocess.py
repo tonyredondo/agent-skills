@@ -439,6 +439,42 @@ class ScriptPostprocessTests(unittest.TestCase):
         self.assertTrue(any("incidente o soporte" in text for text in tail))
         self.assertTrue(any("defaults claros" in text and "evidencia" in text for text in tail))
 
+    def test_harden_script_structure_splits_dense_multi_sentence_turn(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Abrimos con una pregunta operativa clara."},
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "x",
+                "text": "Porque una sola ejecucion no define fiabilidad. En short, 5 minutos, pides exito de al menos 98%, p95 total de hasta 8 minutos y reanudacion p95 de hasta 4. En standard, 97%, 20 y 10. En long, 95%, 40 y 18.",
+            },
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Con eso ya puedes decidir si observas, promueves o reviertes."},
+        ]
+        out = harden_script_structure(lines)
+        self.assertGreater(len(out), len(lines))
+        host2_lines = [str(line.get("text") or "") for line in out if str(line.get("role") or "") == "Host2"]
+        self.assertTrue(any("En short" in text for text in host2_lines))
+        self.assertTrue(any("En long" in text for text in host2_lines))
+        self.assertTrue(all(len(text.split()) < 38 for text in host2_lines))
+
+    def test_harden_script_structure_splits_dense_colon_enumeration_turn(self) -> None:
+        lines = [
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Abrimos con el rollout y el umbral de promocion."},
+            {
+                "speaker": "Luis",
+                "role": "Host2",
+                "instructions": "x",
+                "text": "Y la barra no se pasa con una sola luz verde. Para promover hacen falta las tres juntas: sin incidentes criticos abiertos, dos ventanas sanas y la suite golden aprobada. Si caen dos ventanas seguidas, vuelves a la ultima release conocida como buena.",
+            },
+            {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Con eso la decision ya no sale de intuicion sino de evidencia operativa."},
+        ]
+        out = harden_script_structure(lines)
+        host2_lines = [str(line.get("text") or "") for line in out if str(line.get("role") or "") == "Host2"]
+        self.assertGreaterEqual(len(host2_lines), 2)
+        self.assertTrue(any("las tres juntas" in text for text in host2_lines))
+        self.assertTrue(any("ultima release" in text for text in host2_lines))
+        self.assertTrue(all(len(text.split()) < 38 for text in host2_lines))
+
     def test_normalize_speaker_turns_limits_consecutive_run(self) -> None:
         lines = [
             {"speaker": "Ana", "role": "Host1", "instructions": "x", "text": "Linea 1"},

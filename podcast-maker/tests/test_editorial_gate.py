@@ -153,6 +153,105 @@ class EditorialGateTests(unittest.TestCase):
         self.assertIn(1, dense_failure["line_indexes"])
         self.assertIn(2, dense_failure["line_indexes"])
 
+    def test_evaluate_counts_reframe_language_as_host2_push(self) -> None:
+        lines = [
+            _line("Ana", "Host1", "Promover no puede depender de una corrida suelta; necesitas reglas operativas visibles antes de tocar produccion."),
+            _line("Luis", "Host2", "Ese es el autoengano clasico: confundir una pasada limpia con una operacion lista para escalar."),
+            _line("Ana", "Host1", "Por eso la promocion pide compuerta, ventanas sanas y rollback claro."),
+            _line("Luis", "Host2", "Eso ordena el objetivo, pero no me dice cuando frenas de verdad si el canary sigue sano a medias."),
+            _line("Ana", "Host1", "Frenas cuando fallan dos ventanas seguidas o cuando queda un incidente critico abierto."),
+            _line("Luis", "Host2", "Por eso la decision no es celebrar la corrida sino mirar si las condiciones siguen alineadas."),
+        ]
+        artifact = build_script_artifact(
+            stage="final",
+            episode_id="episode_test",
+            run_token="run_test",
+            source_digest="src_digest",
+            plan_ref="episode_plan.json",
+            plan_digest="plan_digest",
+            lines=lines,
+            episode_plan=self.plan,
+            target_word_count=120,
+        )
+        report = EditorialGate(client=None, logger=self.logger).evaluate(
+            script_artifact=artifact,
+            script_lines=list(artifact.get("lines", [])),
+            episode_plan=self.plan,
+            evidence_map={},
+            profile_name="short",
+            min_words=40,
+            max_words=180,
+        )
+        failure_types = {item["failure_type"] for item in report["failures"]}
+        self.assertNotIn("host2_not_pushing", failure_types)
+        self.assertGreaterEqual(report["deterministic_metrics"]["host2_push_ratio"], 0.66)
+
+    def test_evaluate_counts_grounded_operational_prompts_as_host2_push(self) -> None:
+        lines = [
+            _line("Ana", "Host1", "Las etapas cambian el nivel de evidencia que pides antes de mover un release."),
+            _line("Luis", "Host2", "Con eso, lo que cambia es que dejas de mirar una corrida aislada y pasas a pedir verificaciones concretas."),
+            _line("Ana", "Host1", "Luego el triage te obliga a leer artefactos en orden para no mezclar causas."),
+            _line("Luis", "Host2", "Ese orden importa: si audio falla por rate limit, no miras solo el guion ni persigues la causa equivocada."),
+            _line("Ana", "Host1", "Y si el ultimo error no explica la ventana, toca abrir el historial y cruzarlo con los manifests."),
+            _line("Luis", "Host2", "Si el ultimo error no alcanza, necesitas el historial de eventos antes de decidir si recuperas o escalas."),
+        ]
+        artifact = build_script_artifact(
+            stage="final",
+            episode_id="episode_test",
+            run_token="run_test",
+            source_digest="src_digest",
+            plan_ref="episode_plan.json",
+            plan_digest="plan_digest",
+            lines=lines,
+            episode_plan=self.plan,
+            target_word_count=110,
+        )
+        report = EditorialGate(client=None, logger=self.logger).evaluate(
+            script_artifact=artifact,
+            script_lines=list(artifact.get("lines", [])),
+            episode_plan=self.plan,
+            evidence_map={},
+            profile_name="short",
+            min_words=40,
+            max_words=180,
+        )
+        failure_types = {item["failure_type"] for item in report["failures"]}
+        self.assertNotIn("host2_not_pushing", failure_types)
+        self.assertGreaterEqual(report["deterministic_metrics"]["host2_push_ratio"], 0.66)
+
+    def test_evaluate_counts_tail_triage_language_as_host2_push(self) -> None:
+        lines = [
+            _line("Ana", "Host1", "Tienes manifests, reportes y checkpoints para separar si el problema viene de script o de audio."),
+            _line("Luis", "Host2", "Porque no es lo mismo un timeout que un stuck o un rate_limit; si mezclas esos casos, abres archivos a ciegas."),
+            _line("Ana", "Host1", "Cuando sospechas del guion, una ruta util es run_summary primero y quality_report despues."),
+            _line("Luis", "Host2", "Vale, pero dame el orden util: si sospecho del audio, audio_manifest confirma el error_kind; si bloquea el gate, no hay misterio y conviene usar quality_report."),
+            _line("Ana", "Host1", "Y si ya toca escalar, el bundle tiene que salir con enough contexto y un episode id estable."),
+            _line("Luis", "Host2", "Antes de compartirlo, pasa --script-path. Y ahi queda la tesis completa: triage por senales estructuradas y rollback cuando la salud deja de sostenerse."),
+        ]
+        artifact = build_script_artifact(
+            stage="final",
+            episode_id="episode_test",
+            run_token="run_test",
+            source_digest="src_digest",
+            plan_ref="episode_plan.json",
+            plan_digest="plan_digest",
+            lines=lines,
+            episode_plan=self.plan,
+            target_word_count=120,
+        )
+        report = EditorialGate(client=None, logger=self.logger).evaluate(
+            script_artifact=artifact,
+            script_lines=list(artifact.get("lines", [])),
+            episode_plan=self.plan,
+            evidence_map={},
+            profile_name="short",
+            min_words=40,
+            max_words=180,
+        )
+        failure_types = {item["failure_type"] for item in report["failures"]}
+        self.assertNotIn("host2_not_pushing", failure_types)
+        self.assertGreaterEqual(report["deterministic_metrics"]["host2_push_ratio"], 0.66)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -414,6 +414,10 @@ class ScriptGenerator:
             if pace_hint:
                 payload["pace_hint"] = pace_hint
             rebuilt_lines.append(payload)
+        rebuilt_lines = harden_script_structure(
+            rebuilt_lines,
+            max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
+        )
         return build_script_artifact(
             stage=str(script_artifact.get("stage") or "rewritten"),
             episode_id=str(script_artifact.get("episode_id") or ""),
@@ -424,6 +428,30 @@ class ScriptGenerator:
             lines=rebuilt_lines,
             episode_plan=episode_plan,
             raw_turns=raw_turns,
+            prior_artifact=script_artifact,
+            target_word_count=script_artifact.get("target_word_count"),
+        )
+
+    def _harden_script_artifact(
+        self,
+        *,
+        script_artifact: Dict[str, Any],
+        episode_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize rewritten/finalized lines before writing or evaluating."""
+        hardened_lines = harden_script_structure(
+            list(script_artifact.get("lines", []) or []),
+            max_consecutive_same_speaker=self._max_consecutive_same_speaker(),
+        )
+        return build_script_artifact(
+            stage=str(script_artifact.get("stage") or "rewritten"),
+            episode_id=str(script_artifact.get("episode_id") or ""),
+            run_token=str(script_artifact.get("run_token") or ""),
+            source_digest=str(script_artifact.get("source_digest") or ""),
+            plan_ref=str(script_artifact.get("plan_ref") or ""),
+            plan_digest=str(script_artifact.get("plan_digest") or ""),
+            lines=hardened_lines,
+            episode_plan=episode_plan,
             prior_artifact=script_artifact,
             target_word_count=script_artifact.get("target_word_count"),
         )
@@ -3000,6 +3028,10 @@ class ScriptGenerator:
                         editorial_report=None,
                         round_idx=round_used,
                     )
+                    rewritten_artifact = self._harden_script_artifact(
+                        script_artifact=rewritten_artifact,
+                        episode_plan=episode_plan,
+                    )
                     write_json_artifact(
                         path=rewrite_round_path(run_dir=store.run_dir, round_idx=round_used),
                         payload=rewritten_artifact,
@@ -3069,6 +3101,10 @@ class ScriptGenerator:
                         episode_plan=episode_plan,
                         editorial_report=editorial_report,
                         round_idx=round_used,
+                    )
+                    rewritten_artifact = self._harden_script_artifact(
+                        script_artifact=rewritten_artifact,
+                        episode_plan=episode_plan,
                     )
                     write_json_artifact(
                         path=rewrite_round_path(run_dir=store.run_dir, round_idx=round_used),
