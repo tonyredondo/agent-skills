@@ -19,11 +19,16 @@ Cada skill vive en su propia carpeta de primer nivel.
 .
 ├── README.md
 ├── .gitignore
-└── podcast-maker/
+├── podcast-maker/
     ├── SKILL.md
     ├── README.md
     ├── scripts/
     └── tests/
+└── setup-codex-prerequisites/
+    ├── SKILL.md
+    ├── README.md
+    ├── agents/
+    └── scripts/
 ```
 
 ## Skills disponibles
@@ -36,6 +41,15 @@ Skill para generar guion y audio de podcast desde texto fuente, con:
 - sintetesis TTS con control por segmento,
 - quality gates y validaciones,
 - utilidades de checkpoint/debug y tests de regresion.
+
+### `setup-codex-prerequisites`
+
+Skill para preparar una estacion Windows con herramientas base de Codex, incluyendo:
+
+- bootstrap de `winget` y Python cuando faltan,
+- `uv`, `pipx`, `PyYAML` y CLIs Python aisladas,
+- herramientas de repositorio y entorno como `git`, `gh`, `rg`, `pwsh`, `node`, `npm` y `pnpm`,
+- utilidades de inspeccion, build y auditoria ligera como `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`, `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt` y `hadolint`.
 
 ## Estandares para cada skill
 

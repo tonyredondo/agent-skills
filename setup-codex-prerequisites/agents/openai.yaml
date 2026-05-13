@@ -1,0 +1,4 @@
+interface:
+  display_name: "Setup Codex Prerequisites"
+  short_description: "Install baseline Codex development tools"
+  default_prompt: "Use $setup-codex-prerequisites to install and verify the baseline Codex development tools on this Windows machine."
