@@ -302,7 +302,8 @@ function Test-Tool {
 }
 
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-    throw "This installer currently supports Windows only."
+    Write-Error "setup-codex-prerequisites is Windows-only. This script did not install or change anything. Use or create a separate macOS/Linux bootstrap for this machine."
+    exit 2
 }
 
 Install-WingetIfMissing

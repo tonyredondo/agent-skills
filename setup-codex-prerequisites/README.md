@@ -2,6 +2,8 @@
 
 Skill para preparar una estacion Windows con el baseline de herramientas que Codex suele necesitar para desarrollo, inspeccion de repositorios, paquetes, linting, auditoria ligera y builds.
 
+Este skill es solo para Windows. En macOS o Linux debe detenerse sin instalar nada y usarse un bootstrap especifico para ese sistema.
+
 ## Que instala
 
 - Bootstrap de `winget` cuando falta.

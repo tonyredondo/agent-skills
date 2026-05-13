@@ -9,13 +9,17 @@ description: Install and verify a Windows workstation baseline for Codex work. U
 
 Use this skill to bootstrap a Windows machine with the CLI tools Codex commonly needs for coding, repository inspection, package management, linting, auditing, archives, and build workflows.
 
+This skill is Windows-only. If the current machine is not Windows, do not attempt installation; report that this skill cannot run on the current OS and that a separate macOS/Linux bootstrap script is needed.
+
 The bundled script installs the current baseline from this skill and verifies every command by name before reporting success.
 
 The bootstrap order is deliberate: first make `winget` available, then install Python if missing, then install Python support tools and native CLI tools.
 
 ## Workflow
 
-1. Prefer the bundled installer:
+1. Confirm the host OS is Windows before running the installer. On non-Windows hosts, stop and report that the skill is Windows-only.
+
+2. Prefer the bundled installer:
 
 ```powershell
 $skillPath = Join-Path $env:USERPROFILE ".codex\skills\setup-codex-prerequisites"
@@ -23,7 +27,7 @@ $installer = Join-Path $skillPath "scripts\install-codex-prerequisites.ps1"
 powershell -ExecutionPolicy Bypass -File $installer
 ```
 
-2. After installing, tell the user which tools were installed and which checks passed. Mention that already-open terminals may need to be restarted to inherit PATH changes.
+3. After installing, tell the user which tools were installed and which checks passed. Mention that already-open terminals may need to be restarted to inherit PATH changes.
 
 ## Installed Baseline
 
