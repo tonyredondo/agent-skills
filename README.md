@@ -44,9 +44,9 @@ Skill para generar guion y audio de podcast desde texto fuente, con:
 
 ### `setup-codex-prerequisites`
 
-Skill para preparar una estacion Windows con herramientas base de Codex, incluyendo:
+Skill para preparar una estacion Windows, macOS o Debian/Ubuntu Linux con herramientas base de Codex, incluyendo:
 
-- bootstrap de `winget` y Python cuando faltan,
+- bootstrap de `winget`, Homebrew, `apt` y Python cuando aplica,
 - `uv`, `pipx`, `PyYAML` y CLIs Python aisladas,
 - herramientas de repositorio y entorno como `git`, `gh`, `rg`, `pwsh`, `node`, `npm` y `pnpm`,
 - utilidades de inspeccion, build y auditoria ligera como `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`, `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt` y `hadolint`.

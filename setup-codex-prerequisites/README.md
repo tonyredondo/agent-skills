@@ -1,13 +1,15 @@
 # setup-codex-prerequisites
 
-Skill para preparar una estacion Windows con el baseline de herramientas que Codex suele necesitar para desarrollo, inspeccion de repositorios, paquetes, linting, auditoria ligera y builds.
+Skill para preparar una estacion Windows, macOS o Debian/Ubuntu Linux con el baseline de herramientas que Codex suele necesitar para desarrollo, inspeccion de repositorios, paquetes, linting, auditoria ligera y builds.
 
-Este skill es solo para Windows. En macOS o Linux debe detenerse sin instalar nada y usarse un bootstrap especifico para ese sistema.
+El soporte Linux inicial se limita a Debian y Ubuntu. Otras distros deben detenerse sin instalar nada hasta que tengan un bootstrap especifico.
 
 ## Que instala
 
-- Bootstrap de `winget` cuando falta.
-- Python 3.13 cuando no hay `python` ni `py`.
+- Bootstrap de `winget` en Windows y Homebrew en macOS cuando faltan.
+- Soporte `apt` para Debian/Ubuntu.
+- Node.js 22 en Debian/Ubuntu via NodeSource cuando el Node del sistema es demasiado antiguo para `pnpm`.
+- Python 3.13 en Windows cuando no hay `python` ni `py`; `python3` en macOS/Linux.
 - Herramientas Python: `uv`, `uvx`, `pipx`, `PyYAML`.
 - CLIs aisladas con `pipx`: `ruff`, `pytest`, `mypy`, `pre-commit`, `pip-audit`.
 - Herramientas base: `git`, `gh`, `rg`, `pwsh`, `node`, `npm`, `pnpm`.
@@ -18,8 +20,16 @@ Este skill es solo para Windows. En macOS o Linux debe detenerse sin instalar na
 
 Desde la raiz de esta skill:
 
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-codex-prerequisites.ps1
+```
+
+macOS/Linux:
+
+```bash
+./scripts/install.sh
 ```
 
 El script es idempotente: si una herramienta ya esta disponible y responde a su comprobacion de version, no se reinstala. Si un comando existe pero no pasa la comprobacion, intenta instalar o reparar el paquete correspondiente.
@@ -27,6 +37,8 @@ El script es idempotente: si una herramienta ya esta disponible y responde a su 
 ## Verificacion
 
 El instalador termina verificando que cada comando esperado resuelve por nombre desde `PATH` y responde con version o salida de ayuda. Si una terminal estaba abierta antes de los cambios de `PATH`, puede ser necesario reiniciarla.
+
+La ruta Linux se probo en WSL con Ubuntu 24.04. Cuando el usuario no tiene `sudo` no interactivo, el script falla rapido con un mensaje claro en vez de quedarse esperando password.
 
 ## Seguridad
 
