@@ -19,6 +19,12 @@ Cada skill vive en su propia carpeta de primer nivel.
 .
 ├── README.md
 ├── .gitignore
+├── code-diff-walkthrough/
+    ├── SKILL.md
+    ├── README.md
+    ├── agents/
+    ├── scripts/
+    └── tests/
 ├── podcast-maker/
     ├── SKILL.md
     ├── README.md
@@ -32,6 +38,16 @@ Cada skill vive en su propia carpeta de primer nivel.
 ```
 
 ## Skills disponibles
+
+### `code-diff-walkthrough`
+
+Skill for generating self-contained bilingual HTML walkthroughs for pull requests, branches, or local git diffs, including:
+
+- English and Spanish review pages from the real git diff,
+- file and hunk-level explanations,
+- optional architecture and glossary diagrams from notes JSON,
+- inline saved review comments and reviewed-file tracking in browser `localStorage`,
+- syntax-highlighted diff rendering with pinned highlight.js CDN assets.
 
 ### `podcast-maker`
 
