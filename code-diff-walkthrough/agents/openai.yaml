@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Diff Walkthrough"
+  short_description: "Bilingual annotated PR diff HTML"
+  default_prompt: "Use $code-diff-walkthrough to generate English and Spanish annotated HTML walkthroughs for this PR or git diff."
