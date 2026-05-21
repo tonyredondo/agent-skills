@@ -145,17 +145,17 @@ The `files` map may use either a string or a localized object. A localized objec
     "path/to/file.xml": {
       "category": {
         "en": "Trimming/linker metadata",
-        "es": "Metadata de trimming/linker"
+        "es": "Trimming/linker metadata"
       },
       "en": "This file-level rationale explains the role of the file.",
-      "es": "Esta explicación de fichero describe el rol del fichero."
+      "es": "This localized file-level rationale explains the role of the file."
     }
   },
   "patterns": [
     {
       "regex": "<type fullname=\"System\\.OverflowException\"\\s*/>",
       "en": "This hunk-level note explains only the matched block.",
-      "es": "Esta nota de hunk explica solo el bloque matcheado."
+      "es": "This localized hunk-level note explains only the matched block."
     }
   ]
 }
@@ -172,22 +172,22 @@ Example:
   "architecture": {
     "title": {
       "en": "Architecture",
-      "es": "Arquitectura"
+      "es": "Architecture"
     },
     "summary": {
       "en": "How the changed pieces call into each other.",
-      "es": "Como se llaman entre si las piezas modificadas."
+      "es": "How the changed pieces call into each other."
     },
     "sections": [
       {
         "id": "request-flow",
         "title": {
           "en": "Request flow",
-          "es": "Flujo de request"
+          "es": "Request flow"
         },
         "summary": {
           "en": "The high-level call path for the new behavior.",
-          "es": "El arbol de llamadas principal del nuevo comportamiento."
+          "es": "The high-level call path for the new behavior."
         },
         "nodes": [
           {
@@ -195,11 +195,11 @@ Example:
             "label": "Entrypoint.Method",
             "detail": {
               "en": "Starts the feature flow.",
-              "es": "Inicia el flujo de la feature."
+              "es": "Starts the feature flow."
             },
             "when": {
               "en": "The feature entrypoint is invoked.",
-              "es": "Cuando se invoca el punto de entrada de la feature."
+              "es": "The feature entrypoint is invoked."
             },
             "evidence": ["src/Entrypoint.cs:42"],
             "kind": "process",
@@ -212,11 +212,11 @@ Example:
             "label": "BackendClient.GetAsync",
             "detail": {
               "en": "Fetches the backend contract.",
-              "es": "Obtiene el contrato del backend."
+              "es": "Fetches the backend contract."
             },
             "when": {
               "en": "Only after the entrypoint guard allows the backend request.",
-              "es": "Solo despues de que el guard del entrypoint permite el request al backend."
+              "es": "Only after the entrypoint guard allows the backend request."
             },
             "evidence": [
               {
@@ -224,7 +224,7 @@ Example:
                 "line": 88,
                 "label": {
                   "en": "Backend request call",
-                  "es": "Llamada al request backend"
+                  "es": "Backend request call"
                 }
               }
             ],
@@ -240,11 +240,11 @@ Example:
             "to": "backend",
             "label": {
               "en": "requests",
-              "es": "consulta"
+              "es": "requests"
             },
             "when": {
               "en": "Only on the backend-enabled branch.",
-              "es": "Solo en la rama donde el backend esta habilitado."
+              "es": "Only on the backend-enabled branch."
             },
             "evidence": ["src/Entrypoint.cs:45"]
           }
@@ -256,7 +256,7 @@ Example:
         "term": "BackendClient",
         "description": {
           "en": "Owns the remote request and response parsing.",
-          "es": "Gestiona el request remoto y el parseo de la respuesta."
+          "es": "Owns the remote request and response parsing."
         },
         "evidence": ["src/BackendClient.cs:88"],
         "files": ["src/BackendClient.cs"]

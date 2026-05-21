@@ -97,7 +97,7 @@ Expected JSON shape:
       "role": "Host1",
       "instructions": "Speak in a warm, confident, conversational tone. Keep pacing measured and clear with brief pauses.",
       "pace_hint": "steady",
-      "text": "Hola y bienvenidos..."
+      "text": "Hello and welcome..."
     }
   ]
 }

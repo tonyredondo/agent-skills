@@ -1,19 +1,19 @@
 # agent-skills
 
-Repositorio para centralizar skills reutilizables de agentes (Cursor/Codex) en un solo lugar.
+Repository for centralizing reusable agent skills (Cursor/Codex) in one place.
 
-## Objetivo
+## Purpose
 
-Este repo guarda el codigo fuente, documentacion y pruebas de cada skill para:
+This repo keeps each skill's source code, documentation, and tests together so it is easy to:
 
-- versionar cambios con historial claro,
-- facilitar mantenimiento y mejoras,
-- reutilizar skills entre proyectos,
-- evitar perdida de conocimiento operativo.
+- version changes with clear history,
+- maintain and improve skills over time,
+- reuse skills across projects,
+- preserve operational knowledge.
 
-## Estructura del repositorio
+## Repository Structure
 
-Cada skill vive en su propia carpeta de primer nivel.
+Each skill lives in its own top-level directory.
 
 ```text
 .
@@ -37,7 +37,7 @@ Cada skill vive en su propia carpeta de primer nivel.
     └── scripts/
 ```
 
-## Skills disponibles
+## Available Skills
 
 ### `code-diff-walkthrough`
 
@@ -51,41 +51,41 @@ Skill for generating self-contained bilingual HTML walkthroughs for pull request
 
 ### `podcast-maker`
 
-Skill para generar guion y audio de podcast desde texto fuente, con:
+Skill for generating podcast scripts and audio from source text, including:
 
-- pipeline de generacion y post-procesado de script,
-- sintetesis TTS con control por segmento,
-- quality gates y validaciones,
-- utilidades de checkpoint/debug y tests de regresion.
+- script generation and post-processing pipeline,
+- TTS synthesis with per-segment control,
+- quality gates and validation checks,
+- checkpoint/debug utilities and regression tests.
 
 ### `setup-codex-prerequisites`
 
-Skill para preparar una estacion Windows, macOS o Debian/Ubuntu Linux con herramientas base de Codex, incluyendo:
+Skill for preparing a Windows, macOS, or Debian/Ubuntu Linux workstation with baseline Codex tools, including:
 
-- bootstrap de `winget`, Homebrew, `apt` y Python cuando aplica,
-- `uv`, `pipx`, `PyYAML` y CLIs Python aisladas,
-- herramientas de repositorio y entorno como `git`, `gh`, `rg`, `pwsh`, `node`, `npm` y `pnpm`,
-- utilidades de inspeccion, build y auditoria ligera como `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`, `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt` y `hadolint`.
+- bootstrapping `winget`, Homebrew, `apt`, and Python when applicable,
+- `uv`, `pipx`, `PyYAML`, and isolated Python CLIs,
+- repository and environment tools such as `git`, `gh`, `rg`, `pwsh`, `node`, `npm`, and `pnpm`,
+- inspection, build, and light-audit utilities such as `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`, `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt`, and `hadolint`.
 
-## Estandares para cada skill
+## Standards For Each Skill
 
-Todo skill nuevo debe incluir, como minimo:
+Every new skill must include, at minimum:
 
-1. `SKILL.md` con la interfaz de uso del skill.
-2. `README.md` con contexto tecnico y operacion local.
-3. Carpeta `scripts/` con entrypoints y pipeline.
-4. Pruebas en `tests/` (si aplica).
+1. `SKILL.md` with the skill's usage interface.
+2. `README.md` with technical context and local operation details.
+3. A `scripts/` directory with entry points and pipeline code.
+4. Tests in `tests/` when applicable.
 
-## Regla de higiene del repo
+## Repository Hygiene Rules
 
-- No commitear artefactos temporales: checkpoints, logs, bundles, caches, `.DS_Store`, etc.
-- Mantener `.gitignore` raiz y de cada skill alineados con sus artefactos reales.
-- Evitar archivos locales de entorno (`.env`, credenciales, claves privadas).
+- Do not commit temporary artifacts: checkpoints, logs, bundles, caches, `.DS_Store`, etc.
+- Keep the root `.gitignore` and each skill's `.gitignore` aligned with their real artifacts.
+- Avoid local environment files (`.env`, credentials, private keys).
 
-## Como agregar un nuevo skill
+## How To Add A New Skill
 
-1. Crear carpeta de primer nivel con nombre del skill (ej. `my-skill/`).
-2. Agregar `SKILL.md`, `README.md`, `scripts/` y (opcional) `tests/`.
-3. Definir o actualizar `.gitignore` para artefactos propios del skill.
-4. Anadir una seccion en este `README.md` bajo "Skills disponibles".
-5. Validar que `git status` quede limpio de temporales antes de commit.
+1. Create a top-level directory with the skill name, for example `my-skill/`.
+2. Add `SKILL.md`, `README.md`, `scripts/`, and optionally `tests/`.
+3. Define or update `.gitignore` for the skill's own artifacts.
+4. Add a section to this `README.md` under "Available Skills".
+5. Validate that `git status` has no temporary files before committing.

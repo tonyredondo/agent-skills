@@ -1,24 +1,24 @@
 # setup-codex-prerequisites
 
-Skill para preparar una estacion Windows, macOS o Debian/Ubuntu Linux con el baseline de herramientas que Codex suele necesitar para desarrollo, inspeccion de repositorios, paquetes, linting, auditoria ligera y builds.
+Skill for preparing a Windows, macOS, or Debian/Ubuntu Linux workstation with the baseline tools Codex usually needs for development, repository inspection, package management, linting, light auditing, and builds.
 
-El soporte Linux inicial se limita a Debian y Ubuntu. Otras distros deben detenerse sin instalar nada hasta que tengan un bootstrap especifico.
+Initial Linux support is limited to Debian and Ubuntu. Other distributions should stop without installing anything until they have a dedicated bootstrap path.
 
-## Que instala
+## What It Installs
 
-- Bootstrap de `winget` en Windows y Homebrew en macOS cuando faltan.
-- Soporte `apt` para Debian/Ubuntu.
-- Node.js 22 en Debian/Ubuntu via NodeSource cuando el Node del sistema es demasiado antiguo para `pnpm`.
-- Python 3.13 en Windows cuando no hay `python` ni `py`; `python3` en macOS/Linux.
-- Herramientas Python: `uv`, `uvx`, `pipx`, `PyYAML`.
-- CLIs aisladas con `pipx`: `ruff`, `pytest`, `mypy`, `pre-commit`, `pip-audit`.
-- Herramientas base: `git`, `gh`, `rg`, `pwsh`, `node`, `npm`, `pnpm`.
-- Utilidades: `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`.
-- Build y auditoria: `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt`, `hadolint`.
+- `winget` bootstrap on Windows and Homebrew bootstrap on macOS when they are missing.
+- `apt` support for Debian/Ubuntu.
+- Node.js 22 on Debian/Ubuntu through NodeSource when the system Node.js version is too old for `pnpm`.
+- Python 3.13 on Windows when neither `python` nor `py` is available; `python3` on macOS/Linux.
+- Python tools: `uv`, `uvx`, `pipx`, `PyYAML`.
+- Isolated CLIs through `pipx`: `ruff`, `pytest`, `mypy`, `pre-commit`, `pip-audit`.
+- Baseline tools: `git`, `gh`, `rg`, `pwsh`, `node`, `npm`, `pnpm`.
+- Utilities: `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`.
+- Build and audit tools: `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt`, `hadolint`.
 
-## Uso local
+## Local Usage
 
-Desde la raiz de esta skill:
+From the skill root:
 
 Windows:
 
@@ -32,14 +32,14 @@ macOS/Linux:
 ./scripts/install.sh
 ```
 
-El script es idempotente: si una herramienta ya esta disponible y responde a su comprobacion de version, no se reinstala. Si un comando existe pero no pasa la comprobacion, intenta instalar o reparar el paquete correspondiente.
+The script is idempotent: if a tool is already available and passes its version check, it is not reinstalled. If a command exists but does not pass its check, the script tries to install or repair the corresponding package.
 
-## Verificacion
+## Verification
 
-El instalador termina verificando que cada comando esperado resuelve por nombre desde `PATH` y responde con version o salida de ayuda. Si una terminal estaba abierta antes de los cambios de `PATH`, puede ser necesario reiniciarla.
+The installer finishes by verifying that each expected command resolves by name from `PATH` and responds with version or help output. If a terminal was open before the `PATH` changes, it may need to be restarted.
 
-La ruta Linux se probo en WSL con Ubuntu 24.04. Cuando el usuario no tiene `sudo` no interactivo, el script falla rapido con un mensaje claro en vez de quedarse esperando password.
+The Linux path was tested on WSL with Ubuntu 24.04. When the user does not have non-interactive `sudo`, the script fails fast with a clear message instead of waiting for a password.
 
-## Seguridad
+## Security
 
-Este skill no configura secretos, API keys ni integraciones especificas de servicios. Solo instala herramientas generales del entorno.
+This skill does not configure secrets, API keys, or service-specific integrations. It only installs general environment tools.
