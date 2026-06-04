@@ -1,5 +1,6 @@
 param(
-    [switch]$VerboseOutput
+    [switch]$VerboseOutput,
+    [switch]$SkipLatestCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +45,39 @@ function Find-UserPathExecutable {
             if (Test-Path -LiteralPath $candidate) {
                 $candidate
             }
+    }
+}
+
+function Convert-YtDlpVersion {
+    param(
+        [string]$Value
+    )
+
+    if ($Value -match '(\d+(?:\.\d+){1,3})') {
+        return [version]$Matches[1]
+    }
+
+    return $null
+}
+
+function Get-LatestYtDlpReleaseVersion {
+    try {
+        $response = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" `
+            -Headers @{
+                "Accept" = "application/vnd.github+json"
+                "User-Agent" = "codex-yt-dlp-skill"
+            } `
+            -TimeoutSec 15
+
+        if ($response.tag_name) {
+            return ($response.tag_name -replace '^v', '').Trim()
         }
+    } catch {
+        return $null
+    }
+
+    return $null
 }
 
 Write-Host "Command resolution"
@@ -54,8 +87,10 @@ Show-CommandInfo ffprobe | Format-Table -AutoSize
 
 Write-Host ""
 Write-Host "Runtime versions"
+$installedYtDlpVersion = $null
 if (Get-Command yt-dlp -ErrorAction SilentlyContinue) {
-    Write-Host ("yt-dlp: " + (& yt-dlp --version))
+    $installedYtDlpVersion = (& yt-dlp --version).Trim()
+    Write-Host ("yt-dlp: " + $installedYtDlpVersion)
 } else {
     Write-Host "yt-dlp: not found"
 }
@@ -70,6 +105,47 @@ if (Get-Command ffprobe -ErrorAction SilentlyContinue) {
     Write-Host ("ffprobe: " + ((& ffprobe -version | Select-Object -First 1) -replace "`r", ""))
 } else {
     Write-Host "ffprobe: not found"
+}
+
+if ($SkipLatestCheck) {
+    Write-Host ""
+    Write-Host "yt-dlp release check"
+    Write-Host "Skipped because -SkipLatestCheck was passed."
+} else {
+    Write-Host ""
+    Write-Host "yt-dlp release check"
+    if (-not $installedYtDlpVersion) {
+        Write-Host "Installed version: not found"
+    } else {
+        Write-Host "Installed version: $installedYtDlpVersion"
+    }
+
+    $latestYtDlpVersion = Get-LatestYtDlpReleaseVersion
+    if (-not $latestYtDlpVersion) {
+        Write-Host "Latest GitHub release: unavailable; network or GitHub API access may be blocked."
+    } else {
+        Write-Host "Latest GitHub release: $latestYtDlpVersion"
+
+        $installedComparable = Convert-YtDlpVersion $installedYtDlpVersion
+        $latestComparable = Convert-YtDlpVersion $latestYtDlpVersion
+
+        if (-not $installedYtDlpVersion) {
+            Write-Host "Version status: install yt-dlp before running download actions."
+        } elseif ($installedComparable -and $latestComparable) {
+            if ($installedComparable -lt $latestComparable) {
+                Write-Host "Version status: update recommended before using yt-dlp."
+                Write-Host "Update through the same route used for installation."
+            } elseif ($installedComparable -gt $latestComparable) {
+                Write-Host "Version status: installed version is newer than the latest stable release."
+            } else {
+                Write-Host "Version status: installed version matches the latest GitHub release."
+            }
+        } elseif ($installedYtDlpVersion -ne $latestYtDlpVersion) {
+            Write-Host "Version status: installed version differs from the latest GitHub release."
+        } else {
+            Write-Host "Version status: installed version matches the latest GitHub release."
+        }
+    }
 }
 
 $userFfmpeg = @(Find-UserPathExecutable "ffmpeg.exe")

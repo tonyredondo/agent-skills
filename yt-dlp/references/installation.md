@@ -8,6 +8,7 @@ Use this reference when yt-dlp needs to be installed, updated, repaired, or sele
 - Prefer official release binaries when package-manager builds lag behind site changes.
 - Update through the same route used for installation.
 - Verify with `yt-dlp --version`.
+- Before real download or post-processing actions, compare the installed stable version with the latest GitHub release. The bundled diagnostic scripts do this without mutating the installation.
 - Supported Python is CPython 3.10+ or PyPy 3.11+.
 - For post-processing, merging separate audio/video, audio extraction, thumbnails, or subtitles, install the `ffmpeg` and `ffprobe` binaries and verify with `ffmpeg -version` and `ffprobe -version`.
 - For full YouTube support, ensure `yt-dlp-ejs` and a supported JavaScript runtime are available. Deno is recommended and enabled by default.
@@ -236,12 +237,29 @@ Official bundled executables and the Unix zipimport binary include EJS scripts. 
 Package-manager builds may lag behind the official release. If a site extractor breaks:
 
 1. Run `yt-dlp --version`.
-2. Update through the same install route.
-3. Retry with `yt-dlp -Uv "<URL>"`.
-4. Try nightly only when stable appears broken or the user asks for it:
+2. Compare against the latest stable GitHub release with `scripts/check_ytdlp.ps1` or `scripts/check_ytdlp.sh`.
+3. If the installed stable version is older, ask the user before updating through the same install route.
+4. Retry with `yt-dlp -Uv "<URL>"`.
+5. Try nightly only when stable appears broken or the user asks for it:
 
 ```bash
 yt-dlp --update-to nightly
 ```
 
 Be careful with arbitrary `--update-to owner/repo` targets because official documentation notes binary verification is not provided for binaries from other repositories.
+
+## Latest Release Check
+
+Use non-mutating checks:
+
+```bash
+yt-dlp --version
+```
+
+Latest stable release metadata:
+
+```text
+https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest
+```
+
+Compare the installed version to the `tag_name` returned by GitHub. Treat these as yt-dlp date-style stable release tags, not semantic versions. If the GitHub API is unreachable, rate-limited, or returns malformed data, report freshness as unknown and do not block command generation or downloads.

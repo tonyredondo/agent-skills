@@ -6,13 +6,20 @@
 yt-dlp --version
 yt-dlp -Uv "<URL>"
 yt-dlp -F "<URL>"
+.\scripts\check_ytdlp.ps1
 Get-Command yt-dlp -All
 Get-Command ffmpeg -All
 ffmpeg -version
 ffprobe -version
 ```
 
-Use `-Uv` for issue diagnostics because it combines update information and verbose output. Redact or summarize logs before sharing them; URLs, headers, cookies, paths, and account details may appear.
+Use `-Uv` for issue diagnostics because it combines update information and verbose output. Redact or summarize logs before sharing them; URLs, headers, cookies, paths, and account details may appear. Use the bundled check script first when the question is whether the installed binary is current; do not use `yt-dlp -U` as a freshness check because it can mutate release-binary installs.
+
+On macOS/Linux, use:
+
+```bash
+sh ./scripts/check_ytdlp.sh
+```
 
 ## Update Problems
 

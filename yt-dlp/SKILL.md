@@ -10,7 +10,7 @@ description: Use yt-dlp from Codex for cross-platform installation/setup, comman
 Start with inspection unless the user explicitly gives a complete command and asks to run it:
 
 1. Read `references/installation.md` when yt-dlp is missing, stale, or needs installation on Windows, macOS, Linux, Android/Termux, or direct binary/pip routes.
-2. Verify the environment with `scripts/check_ytdlp.ps1` on Windows or `scripts/check_ytdlp.sh` on macOS/Linux when setup, PATH, ffmpeg, ffprobe, Python, or JavaScript runtime state matters.
+2. Before using the installed `yt-dlp` binary for a real action, verify the environment and stable release freshness with `scripts/check_ytdlp.ps1` on Windows or `scripts/check_ytdlp.sh` on macOS/Linux. The GitHub latest-release check is short-timeout and non-blocking; if it reports an older installed stable version, recommend updating through the same install route before continuing.
 3. Use `yt-dlp --version` and `yt-dlp --help` for exact local behavior when options may have changed.
 4. Use `yt-dlp --simulate`, `--dump-json`, `--print`, or `--list-formats` before downloading when choosing formats, naming files, or diagnosing extractor behavior.
 5. Build the smallest command that satisfies the request. Quote URLs and output templates.
@@ -74,4 +74,4 @@ Use `--verbose` only for diagnostics. Avoid pasting verbose logs into final answ
 
 ## Updating
 
-Update through the same route used for installation. For standalone release binaries, `yt-dlp -U` is supported. The official README notes stable, nightly, and master release channels; use nightly only when a current stable release appears broken by site changes or the user asks for it.
+Update through the same route used for installation. Do not auto-update without explicit user approval. For standalone release binaries, `yt-dlp -U` is supported. The official README notes stable, nightly, and master release channels; use nightly only when a current stable release appears broken by site changes or the user asks for it.
