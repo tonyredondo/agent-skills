@@ -1,0 +1,4 @@
+interface:
+  display_name: "yt-dlp"
+  short_description: "Install and use yt-dlp across OSes"
+  default_prompt: "Use $yt-dlp to install, configure, download media, inspect formats, or troubleshoot yt-dlp commands."

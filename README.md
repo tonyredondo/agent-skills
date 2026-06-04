@@ -30,10 +30,16 @@ Each skill lives in its own top-level directory.
     ├── README.md
     ├── scripts/
     └── tests/
-└── setup-codex-prerequisites/
+├── setup-codex-prerequisites/
     ├── SKILL.md
     ├── README.md
     ├── agents/
+    └── scripts/
+└── yt-dlp/
+    ├── SKILL.md
+    ├── README.md
+    ├── agents/
+    ├── references/
     └── scripts/
 ```
 
@@ -66,6 +72,15 @@ Skill for preparing a Windows, macOS, or Debian/Ubuntu Linux workstation with ba
 - `uv`, `pipx`, `PyYAML`, and isolated Python CLIs,
 - repository and environment tools such as `git`, `gh`, `rg`, `pwsh`, `node`, `npm`, and `pnpm`,
 - inspection, build, and light-audit utilities such as `jq`, `yq`, `fd`, `fzf`, `bat`, `delta`, `7z`, `just`, `cmake`, `ninja`, `gitleaks`, `shellcheck`, `shfmt`, and `hadolint`.
+
+### `yt-dlp`
+
+Skill for installing and using the `yt-dlp` CLI across Windows, macOS, Linux, and Android/Termux, including:
+
+- official release binary, pip, package-manager, and Termux install/update routes,
+- `ffmpeg`, `ffprobe`, `yt-dlp-ejs`, and JavaScript runtime setup notes,
+- format selection, output templates, playlists, subtitles, cookies, and post-processing commands,
+- Windows PowerShell and Unix shell diagnostics for PATH and runtime issues.
 
 ## Standards For Each Skill
 
