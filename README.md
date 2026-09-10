@@ -25,6 +25,12 @@ Each skill lives in its own top-level directory.
     ├── agents/
     ├── scripts/
     └── tests/
+├── paseo-clone-chat/
+    ├── SKILL.md
+    ├── README.md
+    ├── agents/
+    ├── scripts/
+    └── tests/
 ├── podcast-maker/
     ├── SKILL.md
     ├── README.md
@@ -54,6 +60,17 @@ Skill for generating self-contained bilingual HTML walkthroughs for pull request
 - optional architecture and glossary diagrams from notes JSON,
 - inline saved review comments and reviewed-file tracking in browser `localStorage`,
 - syntax-highlighted diff rendering with pinned highlight.js CDN assets.
+
+### `paseo-clone-chat`
+
+Skill for cloning a Codex conversation into the same Paseo workspace, including:
+
+- native conversation forks with verified history,
+- snapshots through the last finished turn when cloning a running chat,
+- preservation of the source model, thinking option, mode, and editable toggles,
+- recovery from partial imports without creating duplicate chats.
+
+See [installation and usage](paseo-clone-chat/README.md).
 
 ### `podcast-maker`
 

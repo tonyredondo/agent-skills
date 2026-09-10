@@ -1,0 +1,3 @@
+interface:
+  display_name: "Paseo Clone Chat"
+  short_description: "Clona chats de Codex y los importa en Paseo"
